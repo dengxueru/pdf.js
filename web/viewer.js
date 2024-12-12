@@ -13,6 +13,8 @@
  * limitations under the License.
  */
 
+import "web-com";
+import "web-print_service";
 import { RenderingStates, ScrollMode, SpreadMode } from "./ui_utils.js";
 import { AppOptions } from "./app_options.js";
 import { LinkTarget } from "./pdf_link_service.js";
@@ -37,42 +39,39 @@ window.PDFViewerApplicationOptions = AppOptions;
 function getViewerConfiguration() {
   return {
     appContainer: document.body,
-    principalContainer: document.getElementById("mainContainer"),
     mainContainer: document.getElementById("viewerContainer"),
     viewerContainer: document.getElementById("viewer"),
     toolbar: {
-      container: document.getElementById("toolbarContainer"),
+      container: document.getElementById("toolbarViewer"),
       numPages: document.getElementById("numPages"),
       pageNumber: document.getElementById("pageNumber"),
       scaleSelect: document.getElementById("scaleSelect"),
       customScaleOption: document.getElementById("customScaleOption"),
       previous: document.getElementById("previous"),
       next: document.getElementById("next"),
-      zoomIn: document.getElementById("zoomInButton"),
-      zoomOut: document.getElementById("zoomOutButton"),
-      print: document.getElementById("printButton"),
-      editorFreeTextButton: document.getElementById("editorFreeTextButton"),
+      zoomIn: document.getElementById("zoomIn"),
+      zoomOut: document.getElementById("zoomOut"),
+      viewFind: document.getElementById("viewFind"),
+      openFile:
+        typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")
+          ? document.getElementById("openFile")
+          : null,
+      print: document.getElementById("print"),
+      editorFreeTextButton: document.getElementById("editorFreeText"),
       editorFreeTextParamsToolbar: document.getElementById(
         "editorFreeTextParamsToolbar"
       ),
-      editorHighlightButton: document.getElementById("editorHighlightButton"),
-      editorHighlightParamsToolbar: document.getElementById(
-        "editorHighlightParamsToolbar"
-      ),
-      editorHighlightColorPicker: document.getElementById(
-        "editorHighlightColorPicker"
-      ),
-      editorInkButton: document.getElementById("editorInkButton"),
+      editorInkButton: document.getElementById("editorInk"),
       editorInkParamsToolbar: document.getElementById("editorInkParamsToolbar"),
-      editorStampButton: document.getElementById("editorStampButton"),
+      editorStampButton: document.getElementById("editorStamp"),
       editorStampParamsToolbar: document.getElementById(
         "editorStampParamsToolbar"
       ),
-      download: document.getElementById("downloadButton"),
+      download: document.getElementById("download"),
     },
     secondaryToolbar: {
       toolbar: document.getElementById("secondaryToolbar"),
-      toggleButton: document.getElementById("secondaryToolbarToggleButton"),
+      toggleButton: document.getElementById("secondaryToolbarToggle"),
       presentationModeButton: document.getElementById("presentationMode"),
       openFileButton:
         typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")
@@ -94,19 +93,13 @@ function getViewerConfiguration() {
       spreadNoneButton: document.getElementById("spreadNone"),
       spreadOddButton: document.getElementById("spreadOdd"),
       spreadEvenButton: document.getElementById("spreadEven"),
-      imageAltTextSettingsButton: document.getElementById(
-        "imageAltTextSettings"
-      ),
-      imageAltTextSettingsSeparator: document.getElementById(
-        "imageAltTextSettingsSeparator"
-      ),
       documentPropertiesButton: document.getElementById("documentProperties"),
     },
     sidebar: {
       // Divs (and sidebar button)
       outerContainer: document.getElementById("outerContainer"),
       sidebarContainer: document.getElementById("sidebarContainer"),
-      toggleButton: document.getElementById("sidebarToggleButton"),
+      toggleButton: document.getElementById("sidebarToggle"),
       resizer: document.getElementById("sidebarResizer"),
       // Buttons
       thumbnailButton: document.getElementById("viewThumbnail"),
@@ -119,11 +112,14 @@ function getViewerConfiguration() {
       attachmentsView: document.getElementById("attachmentsView"),
       layersView: document.getElementById("layersView"),
       // View-specific options
+      outlineOptionsContainer: document.getElementById(
+        "outlineOptionsContainer"
+      ),
       currentOutlineItemButton: document.getElementById("currentOutlineItem"),
     },
     findBar: {
       bar: document.getElementById("findbar"),
-      toggleButton: document.getElementById("viewFindButton"),
+      toggleButton: document.getElementById("viewFind"),
       findField: document.getElementById("findInput"),
       highlightAllCheckbox: document.getElementById("findHighlightAll"),
       caseSensitiveCheckbox: document.getElementById("findMatchCase"),
@@ -131,8 +127,8 @@ function getViewerConfiguration() {
       entireWordCheckbox: document.getElementById("findEntireWord"),
       findMsg: document.getElementById("findMsg"),
       findResultsCount: document.getElementById("findResultsCount"),
-      findPreviousButton: document.getElementById("findPreviousButton"),
-      findNextButton: document.getElementById("findNextButton"),
+      findPreviousButton: document.getElementById("findPrevious"),
+      findNextButton: document.getElementById("findNext"),
     },
     passwordOverlay: {
       dialog: document.getElementById("passwordDialog"),
@@ -161,55 +157,6 @@ function getViewerConfiguration() {
         linearized: document.getElementById("linearizedField"),
       },
     },
-    altTextDialog: {
-      dialog: document.getElementById("altTextDialog"),
-      optionDescription: document.getElementById("descriptionButton"),
-      optionDecorative: document.getElementById("decorativeButton"),
-      textarea: document.getElementById("descriptionTextarea"),
-      cancelButton: document.getElementById("altTextCancel"),
-      saveButton: document.getElementById("altTextSave"),
-    },
-    newAltTextDialog: {
-      dialog: document.getElementById("newAltTextDialog"),
-      title: document.getElementById("newAltTextTitle"),
-      descriptionContainer: document.getElementById(
-        "newAltTextDescriptionContainer"
-      ),
-      textarea: document.getElementById("newAltTextDescriptionTextarea"),
-      disclaimer: document.getElementById("newAltTextDisclaimer"),
-      learnMore: document.getElementById("newAltTextLearnMore"),
-      imagePreview: document.getElementById("newAltTextImagePreview"),
-      createAutomatically: document.getElementById(
-        "newAltTextCreateAutomatically"
-      ),
-      createAutomaticallyButton: document.getElementById(
-        "newAltTextCreateAutomaticallyButton"
-      ),
-      downloadModel: document.getElementById("newAltTextDownloadModel"),
-      downloadModelDescription: document.getElementById(
-        "newAltTextDownloadModelDescription"
-      ),
-      error: document.getElementById("newAltTextError"),
-      errorCloseButton: document.getElementById("newAltTextCloseButton"),
-      cancelButton: document.getElementById("newAltTextCancel"),
-      notNowButton: document.getElementById("newAltTextNotNow"),
-      saveButton: document.getElementById("newAltTextSave"),
-    },
-    altTextSettingsDialog: {
-      dialog: document.getElementById("altTextSettingsDialog"),
-      createModelButton: document.getElementById("createModelButton"),
-      aiModelSettings: document.getElementById("aiModelSettings"),
-      learnMore: document.getElementById("altTextSettingsLearnMore"),
-      deleteModelButton: document.getElementById("deleteModelButton"),
-      downloadModelButton: document.getElementById("downloadModelButton"),
-      showAltTextDialogButton: document.getElementById(
-        "showAltTextDialogButton"
-      ),
-      altTextSettingsCloseButton: document.getElementById(
-        "altTextSettingsCloseButton"
-      ),
-      closeButton: document.getElementById("altTextSettingsCloseButton"),
-    },
     annotationEditorParams: {
       editorFreeTextFontSize: document.getElementById("editorFreeTextFontSize"),
       editorFreeTextColor: document.getElementById("editorFreeTextColor"),
@@ -217,18 +164,13 @@ function getViewerConfiguration() {
       editorInkThickness: document.getElementById("editorInkThickness"),
       editorInkOpacity: document.getElementById("editorInkOpacity"),
       editorStampAddImage: document.getElementById("editorStampAddImage"),
-      editorFreeHighlightThickness: document.getElementById(
-        "editorFreeHighlightThickness"
-      ),
-      editorHighlightShowAll: document.getElementById("editorHighlightShowAll"),
     },
     printContainer: document.getElementById("printContainer"),
-    editorUndoBar: {
-      container: document.getElementById("editorUndoBar"),
-      message: document.getElementById("editorUndoBarMessage"),
-      undoButton: document.getElementById("editorUndoBarUndoButton"),
-      closeButton: document.getElementById("editorUndoBarCloseButton"),
-    },
+    openFileInput:
+      typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")
+        ? document.getElementById("fileInput")
+        : null,
+    debuggerScriptPath: "./debugger.js",
   };
 }
 
@@ -254,7 +196,7 @@ function webViewerLoad() {
     } catch (ex) {
       // The viewer could be in e.g. a cross-origin <iframe> element,
       // fallback to dispatching the event at the current `document`.
-      console.error("webviewerloaded:", ex);
+      console.error(`webviewerloaded: ${ex}`);
       document.dispatchEvent(event);
     }
   }

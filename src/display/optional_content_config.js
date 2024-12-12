@@ -13,64 +13,33 @@
  * limitations under the License.
  */
 
-import {
-  info,
-  objectFromMap,
-  RenderingIntentFlag,
-  unreachable,
-  warn,
-} from "../shared/util.js";
+import { objectFromMap, unreachable, warn } from "../shared/util.js";
 import { MurmurHash3_64 } from "../shared/murmurhash3.js";
 
 const INTERNAL = Symbol("INTERNAL");
 
 class OptionalContentGroup {
-  #isDisplay = false;
-
-  #isPrint = false;
-
-  #userSet = false;
-
   #visible = true;
 
-  constructor(renderingIntent, { name, intent, usage, rbGroups }) {
-    this.#isDisplay = !!(renderingIntent & RenderingIntentFlag.DISPLAY);
-    this.#isPrint = !!(renderingIntent & RenderingIntentFlag.PRINT);
-
+  constructor(name, intent) {
     this.name = name;
     this.intent = intent;
-    this.usage = usage;
-    this.rbGroups = rbGroups;
   }
 
   /**
    * @type {boolean}
    */
   get visible() {
-    if (this.#userSet) {
-      return this.#visible;
-    }
-    if (!this.#visible) {
-      return false;
-    }
-    const { print, view } = this.usage;
-
-    if (this.#isDisplay) {
-      return view?.viewState !== "OFF";
-    } else if (this.#isPrint) {
-      return print?.printState !== "OFF";
-    }
-    return true;
+    return this.#visible;
   }
 
   /**
    * @ignore
    */
-  _setVisible(internal, visible, userSet = false) {
+  _setVisible(internal, visible) {
     if (internal !== INTERNAL) {
       unreachable("Internal method `_setVisible` called.");
     }
-    this.#userSet = userSet;
     this.#visible = visible;
   }
 }
@@ -84,9 +53,7 @@ class OptionalContentConfig {
 
   #order = null;
 
-  constructor(data, renderingIntent = RenderingIntentFlag.DISPLAY) {
-    this.renderingIntent = renderingIntent;
-
+  constructor(data) {
     this.name = null;
     this.creator = null;
 
@@ -99,7 +66,7 @@ class OptionalContentConfig {
     for (const group of data.groups) {
       this.#groups.set(
         group.id,
-        new OptionalContentGroup(renderingIntent, group)
+        new OptionalContentGroup(group.name, group.intent)
       );
     }
 
@@ -163,7 +130,7 @@ class OptionalContentConfig {
       return true;
     }
     if (!group) {
-      info("Optional content group not defined.");
+      warn("Optional content group not defined.");
       return true;
     }
     if (group.type === "OCG") {
@@ -230,59 +197,12 @@ class OptionalContentConfig {
     return true;
   }
 
-  setVisibility(id, visible = true, preserveRB = true) {
-    const group = this.#groups.get(id);
-    if (!group) {
+  setVisibility(id, visible = true) {
+    if (!this.#groups.has(id)) {
       warn(`Optional content group not found: ${id}`);
       return;
     }
-
-    // If the visibility is about to be set to `true` and the group belongs to
-    // any radiobutton groups, hide all other OCGs in these radiobutton groups,
-    // provided that radiobutton state relationships are to be preserved.
-    if (preserveRB && visible && group.rbGroups.length) {
-      for (const rbGroup of group.rbGroups) {
-        for (const otherId of rbGroup) {
-          if (otherId !== id) {
-            this.#groups.get(otherId)?._setVisible(INTERNAL, false, true);
-          }
-        }
-      }
-    }
-
-    group._setVisible(INTERNAL, !!visible, /* userSet = */ true);
-
-    this.#cachedGetHash = null;
-  }
-
-  setOCGState({ state, preserveRB }) {
-    let operator;
-
-    for (const elem of state) {
-      switch (elem) {
-        case "ON":
-        case "OFF":
-        case "Toggle":
-          operator = elem;
-          continue;
-      }
-
-      const group = this.#groups.get(elem);
-      if (!group) {
-        continue;
-      }
-      switch (operator) {
-        case "ON":
-          this.setVisibility(elem, true, preserveRB);
-          break;
-        case "OFF":
-          this.setVisibility(elem, false, preserveRB);
-          break;
-        case "Toggle":
-          this.setVisibility(elem, !group.visible, preserveRB);
-          break;
-      }
-    }
+    this.#groups.get(id)._setVisible(INTERNAL, !!visible);
 
     this.#cachedGetHash = null;
   }

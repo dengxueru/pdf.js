@@ -14,7 +14,6 @@
  */
 
 import {
-  serializeError,
   USERACTIVATION_CALLBACKID,
   USERACTIVATION_MAXTIME_VALIDITY,
 } from "./app_utils.js";
@@ -82,15 +81,6 @@ class EventDispatcher {
   }
 
   dispatch(baseEvent) {
-    if (
-      typeof PDFJSDev !== "undefined" &&
-      PDFJSDev.test("TESTING") &&
-      baseEvent.name === "sandboxtripbegin"
-    ) {
-      this._externalCall("send", [{ command: "sandboxTripEnd" }]);
-      return;
-    }
-
     const id = baseEvent.id;
     if (!(id in this._objects)) {
       let event;
@@ -243,7 +233,7 @@ class EventDispatcher {
     // Run format actions if any for all the fields.
     const event = (globalThis.event = new Event({}));
     for (const source of Object.values(this._objects)) {
-      event.value = source.obj._getValue();
+      event.value = source.obj.value;
       this.runActions(source, source, event, "Format");
     }
   }
@@ -255,7 +245,8 @@ class EventDispatcher {
 
       this.runCalculate(source, event);
 
-      const savedValue = (event.value = source.obj._getValue());
+      const savedValue = source.obj._getValue();
+      event.value = source.obj.value;
       let formattedValue = null;
 
       if (this.runActions(source, source, event, "Format")) {
@@ -344,16 +335,8 @@ class EventDispatcher {
 
       event.value = null;
       const target = this._objects[targetId];
-      let savedValue = target.obj._getValue();
-      try {
-        this.runActions(source, target, event, "Calculate");
-      } catch (error) {
-        const fieldId = target.obj._id;
-        const serializedError = serializeError(error);
-        serializedError.value = `Error when calculating value for field "${fieldId}"\n${serializedError.value}`;
-        this._externalCall("send", [serializedError]);
-        continue;
-      }
+      let savedValue = target.obj.value;
+      this.runActions(source, target, event, "Calculate");
       if (!event.rc) {
         continue;
       }
@@ -361,23 +344,18 @@ class EventDispatcher {
       if (event.value !== null) {
         // A new value has been calculated so set it.
         target.obj.value = event.value;
-      } else {
-        event.value = target.obj._getValue();
       }
 
+      event.value = target.obj.value;
       this.runActions(target, target, event, "Validate");
       if (!event.rc) {
-        if (target.obj._getValue() !== savedValue) {
+        if (target.obj.value !== savedValue) {
           target.wrapped.value = savedValue;
         }
         continue;
       }
 
-      if (event.value === null) {
-        event.value = target.obj._getValue();
-      }
-
-      savedValue = target.obj._getValue();
+      savedValue = event.value = target.obj.value;
       let formattedValue = null;
       if (this.runActions(target, target, event, "Format")) {
         formattedValue = event.value?.toString?.();

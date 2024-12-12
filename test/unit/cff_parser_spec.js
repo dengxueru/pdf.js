@@ -377,7 +377,9 @@ describe("CFFCompiler", function () {
     bytes = new Uint8Array(bytes);
     return new CFFParser(
       {
-        getBytes: () => bytes,
+        getBytes: () => {
+          return bytes;
+        },
       },
       {},
       SEAC_ANALYSIS_ENABLED

@@ -45,6 +45,7 @@ import { convertBlackAndWhiteToRGBA } from "../shared/image_utils.js";
 const MIN_FONT_SIZE = 16;
 // Maximum font size that would be used during canvas fillText operations.
 const MAX_FONT_SIZE = 100;
+const MAX_GROUP_SIZE = 4096;
 
 // Defines the time the `executeOperatorList`-method is going to be executing
 // before it stops and schedules a continue of execution.
@@ -484,7 +485,6 @@ class CanvasExtraState {
     this.fillColor = "#000000";
     this.strokeColor = "#000000";
     this.patternFill = false;
-    this.patternStroke = false;
     // Note: fill alpha applies to all non-stroking operations
     this.fillAlpha = 1;
     this.strokeAlpha = 1;
@@ -517,26 +517,27 @@ class CanvasExtraState {
   updateRectMinMax(transform, rect) {
     const p1 = Util.applyTransform(rect, transform);
     const p2 = Util.applyTransform(rect.slice(2), transform);
-    const p3 = Util.applyTransform([rect[0], rect[3]], transform);
-    const p4 = Util.applyTransform([rect[2], rect[1]], transform);
-
-    this.minX = Math.min(this.minX, p1[0], p2[0], p3[0], p4[0]);
-    this.minY = Math.min(this.minY, p1[1], p2[1], p3[1], p4[1]);
-    this.maxX = Math.max(this.maxX, p1[0], p2[0], p3[0], p4[0]);
-    this.maxY = Math.max(this.maxY, p1[1], p2[1], p3[1], p4[1]);
+    this.minX = Math.min(this.minX, p1[0], p2[0]);
+    this.minY = Math.min(this.minY, p1[1], p2[1]);
+    this.maxX = Math.max(this.maxX, p1[0], p2[0]);
+    this.maxY = Math.max(this.maxY, p1[1], p2[1]);
   }
 
   updateScalingPathMinMax(transform, minMax) {
     Util.scaleMinMax(transform, minMax);
     this.minX = Math.min(this.minX, minMax[0]);
-    this.minY = Math.min(this.minY, minMax[1]);
-    this.maxX = Math.max(this.maxX, minMax[2]);
+    this.maxX = Math.max(this.maxX, minMax[1]);
+    this.minY = Math.min(this.minY, minMax[2]);
     this.maxY = Math.max(this.maxY, minMax[3]);
   }
 
   updateCurvePathMinMax(transform, x0, y0, x1, y1, x2, y2, x3, y3, minMax) {
-    const box = Util.bezierBoundingBox(x0, y0, x1, y1, x2, y2, x3, y3, minMax);
+    const box = Util.bezierBoundingBox(x0, y0, x1, y1, x2, y2, x3, y3);
     if (minMax) {
+      minMax[0] = Math.min(minMax[0], box[0], box[2]);
+      minMax[1] = Math.max(minMax[1], box[0], box[2]);
+      minMax[2] = Math.min(minMax[2], box[1], box[3]);
+      minMax[3] = Math.max(minMax[3], box[1], box[3]);
       return;
     }
     this.updateRectMinMax(transform, box);
@@ -587,7 +588,7 @@ class CanvasExtraState {
 }
 
 function putBinaryImageData(ctx, imgData) {
-  if (imgData instanceof ImageData) {
+  if (typeof ImageData !== "undefined" && imgData instanceof ImageData) {
     ctx.putImageData(imgData, 0, 0);
     return;
   }
@@ -796,15 +797,123 @@ function resetCtxToDefault(ctx) {
   }
 }
 
-function getImageSmoothingEnabled(transform, interpolate) {
-  // In section 8.9.5.3 of the PDF spec, it's mentioned that the interpolate
-  // flag should be used when the image is upscaled.
-  // In Firefox, smoothing is always used when downscaling images (bug 1360415).
-
-  if (interpolate) {
-    return true;
+function composeSMaskBackdrop(bytes, r0, g0, b0) {
+  const length = bytes.length;
+  for (let i = 3; i < length; i += 4) {
+    const alpha = bytes[i];
+    if (alpha === 0) {
+      bytes[i - 3] = r0;
+      bytes[i - 2] = g0;
+      bytes[i - 1] = b0;
+    } else if (alpha < 255) {
+      const alpha_ = 255 - alpha;
+      bytes[i - 3] = (bytes[i - 3] * alpha + r0 * alpha_) >> 8;
+      bytes[i - 2] = (bytes[i - 2] * alpha + g0 * alpha_) >> 8;
+      bytes[i - 1] = (bytes[i - 1] * alpha + b0 * alpha_) >> 8;
+    }
   }
+}
 
+function composeSMaskAlpha(maskData, layerData, transferMap) {
+  const length = maskData.length;
+  const scale = 1 / 255;
+  for (let i = 3; i < length; i += 4) {
+    const alpha = transferMap ? transferMap[maskData[i]] : maskData[i];
+    layerData[i] = (layerData[i] * alpha * scale) | 0;
+  }
+}
+
+function composeSMaskLuminosity(maskData, layerData, transferMap) {
+  const length = maskData.length;
+  for (let i = 3; i < length; i += 4) {
+    const y =
+      maskData[i - 3] * 77 + // * 0.3 / 255 * 0x10000
+      maskData[i - 2] * 152 + // * 0.59 ....
+      maskData[i - 1] * 28; // * 0.11 ....
+    layerData[i] = transferMap
+      ? (layerData[i] * transferMap[y >> 8]) >> 8
+      : (layerData[i] * y) >> 16;
+  }
+}
+
+function genericComposeSMask(
+  maskCtx,
+  layerCtx,
+  width,
+  height,
+  subtype,
+  backdrop,
+  transferMap,
+  layerOffsetX,
+  layerOffsetY,
+  maskOffsetX,
+  maskOffsetY
+) {
+  const hasBackdrop = !!backdrop;
+  const r0 = hasBackdrop ? backdrop[0] : 0;
+  const g0 = hasBackdrop ? backdrop[1] : 0;
+  const b0 = hasBackdrop ? backdrop[2] : 0;
+
+  const composeFn =
+    subtype === "Luminosity" ? composeSMaskLuminosity : composeSMaskAlpha;
+
+  // processing image in chunks to save memory
+  const PIXELS_TO_PROCESS = 1048576;
+  const chunkSize = Math.min(height, Math.ceil(PIXELS_TO_PROCESS / width));
+  for (let row = 0; row < height; row += chunkSize) {
+    const chunkHeight = Math.min(chunkSize, height - row);
+    const maskData = maskCtx.getImageData(
+      layerOffsetX - maskOffsetX,
+      row + (layerOffsetY - maskOffsetY),
+      width,
+      chunkHeight
+    );
+    const layerData = layerCtx.getImageData(
+      layerOffsetX,
+      row + layerOffsetY,
+      width,
+      chunkHeight
+    );
+
+    if (hasBackdrop) {
+      composeSMaskBackdrop(maskData.data, r0, g0, b0);
+    }
+    composeFn(maskData.data, layerData.data, transferMap);
+
+    layerCtx.putImageData(layerData, layerOffsetX, row + layerOffsetY);
+  }
+}
+
+function composeSMask(ctx, smask, layerCtx, layerBox) {
+  const layerOffsetX = layerBox[0];
+  const layerOffsetY = layerBox[1];
+  const layerWidth = layerBox[2] - layerOffsetX;
+  const layerHeight = layerBox[3] - layerOffsetY;
+  if (layerWidth === 0 || layerHeight === 0) {
+    return;
+  }
+  genericComposeSMask(
+    smask.context,
+    layerCtx,
+    layerWidth,
+    layerHeight,
+    smask.subtype,
+    smask.backdrop,
+    smask.transferMap,
+    layerOffsetX,
+    layerOffsetY,
+    smask.offsetX,
+    smask.offsetY
+  );
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(layerCtx.canvas, 0, 0);
+  ctx.restore();
+}
+
+function getImageSmoothingEnabled(transform, interpolate) {
   const scale = Util.singularValueDecompose2dScale(transform);
   // Round to a 32bit float so that `<=` check below will pass for numbers that
   // are very close, but not exactly the same 64bit floats.
@@ -813,7 +922,15 @@ function getImageSmoothingEnabled(transform, interpolate) {
   const actualScale = Math.fround(
     (globalThis.devicePixelRatio || 1) * PixelsPerInch.PDF_TO_CSS_UNITS
   );
-  return scale[0] <= actualScale && scale[1] <= actualScale;
+  if (interpolate !== undefined) {
+    // If the value is explicitly set use it.
+    return interpolate;
+  } else if (scale[0] <= actualScale || scale[1] <= actualScale) {
+    // Smooth when downscaling.
+    return true;
+  }
+  // Don't smooth when upscaling.
+  return false;
 }
 
 const LINE_CAP_STYLES = ["butt", "round", "square"];
@@ -1007,7 +1124,6 @@ class CanvasGraphics {
       this.restore();
     }
 
-    this.current.activeSMask = null;
     this.ctx.restore();
 
     if (this.transparentCanvas) {
@@ -1060,10 +1176,8 @@ class CanvasGraphics {
     // Vertical or horizontal scaling shall not be more than 2 to not lose the
     // pixels during drawImage operation, painting on the temporary canvas(es)
     // that are twice smaller in size.
-
-    // displayWidth and displayHeight are used for VideoFrame.
-    const width = img.width ?? img.displayWidth;
-    const height = img.height ?? img.displayHeight;
+    const width = img.width;
+    const height = img.height;
     let widthScale = Math.max(
       Math.hypot(inverseTransform[0], inverseTransform[1]),
       1
@@ -1196,12 +1310,11 @@ class CanvasGraphics {
       0,
     ]);
     maskToCanvas = Util.transform(maskToCanvas, [1, 0, 0, 1, 0, -height]);
-    const [minX, minY, maxX, maxY] = Util.getAxialAlignedBoundingBox(
-      [0, 0, width, height],
-      maskToCanvas
-    );
-    const drawnWidth = Math.round(maxX - minX) || 1;
-    const drawnHeight = Math.round(maxY - minY) || 1;
+    const cord1 = Util.applyTransform([0, 0], maskToCanvas);
+    const cord2 = Util.applyTransform([width, height], maskToCanvas);
+    const rect = Util.normalizeRect([cord1[0], cord1[1], cord2[0], cord2[1]]);
+    const drawnWidth = Math.round(rect[2] - rect[0]) || 1;
+    const drawnHeight = Math.round(rect[3] - rect[1]) || 1;
     const fillCanvas = this.cachedCanvases.getCanvas(
       "fillCanvas",
       drawnWidth,
@@ -1213,8 +1326,8 @@ class CanvasGraphics {
     // If objToCanvas is [a,b,c,d,e,f] then:
     //   - offsetX = min(a, c) + e
     //   - offsetY = min(b, d) + f
-    const offsetX = minX;
-    const offsetY = minY;
+    const offsetX = Math.min(cord1[0], cord2[0]);
+    const offsetY = Math.min(cord1[1], cord2[1]);
     fillCtx.translate(-offsetX, -offsetY);
     fillCtx.transform(...maskToCanvas);
 
@@ -1443,123 +1556,13 @@ class CanvasGraphics {
     const smask = this.current.activeSMask;
     const suspendedCtx = this.suspendedCtx;
 
-    this.composeSMask(suspendedCtx, smask, this.ctx, dirtyBox);
+    composeSMask(suspendedCtx, smask, this.ctx, dirtyBox);
     // Whatever was drawn has been moved to the suspended canvas, now clear it
     // out of the current canvas.
     this.ctx.save();
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.clearRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height);
     this.ctx.restore();
-  }
-
-  composeSMask(ctx, smask, layerCtx, layerBox) {
-    const layerOffsetX = layerBox[0];
-    const layerOffsetY = layerBox[1];
-    const layerWidth = layerBox[2] - layerOffsetX;
-    const layerHeight = layerBox[3] - layerOffsetY;
-    if (layerWidth === 0 || layerHeight === 0) {
-      return;
-    }
-    this.genericComposeSMask(
-      smask.context,
-      layerCtx,
-      layerWidth,
-      layerHeight,
-      smask.subtype,
-      smask.backdrop,
-      smask.transferMap,
-      layerOffsetX,
-      layerOffsetY,
-      smask.offsetX,
-      smask.offsetY
-    );
-    ctx.save();
-    ctx.globalAlpha = 1;
-    ctx.globalCompositeOperation = "source-over";
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(layerCtx.canvas, 0, 0);
-    ctx.restore();
-  }
-
-  genericComposeSMask(
-    maskCtx,
-    layerCtx,
-    width,
-    height,
-    subtype,
-    backdrop,
-    transferMap,
-    layerOffsetX,
-    layerOffsetY,
-    maskOffsetX,
-    maskOffsetY
-  ) {
-    let maskCanvas = maskCtx.canvas;
-    let maskX = layerOffsetX - maskOffsetX;
-    let maskY = layerOffsetY - maskOffsetY;
-
-    if (backdrop) {
-      const backdropRGB = Util.makeHexColor(...backdrop);
-      if (
-        maskX < 0 ||
-        maskY < 0 ||
-        maskX + width > maskCanvas.width ||
-        maskY + height > maskCanvas.height
-      ) {
-        const canvas = this.cachedCanvases.getCanvas(
-          "maskExtension",
-          width,
-          height
-        );
-        const ctx = canvas.context;
-        ctx.drawImage(maskCanvas, -maskX, -maskY);
-        ctx.globalCompositeOperation = "destination-atop";
-        ctx.fillStyle = backdropRGB;
-        ctx.fillRect(0, 0, width, height);
-        ctx.globalCompositeOperation = "source-over";
-
-        maskCanvas = canvas.canvas;
-        maskX = maskY = 0;
-      } else {
-        maskCtx.save();
-        maskCtx.globalAlpha = 1;
-        maskCtx.setTransform(1, 0, 0, 1, 0, 0);
-        const clip = new Path2D();
-        clip.rect(maskX, maskY, width, height);
-        maskCtx.clip(clip);
-        maskCtx.globalCompositeOperation = "destination-atop";
-        maskCtx.fillStyle = backdropRGB;
-        maskCtx.fillRect(maskX, maskY, width, height);
-        maskCtx.restore();
-      }
-    }
-
-    layerCtx.save();
-    layerCtx.globalAlpha = 1;
-    layerCtx.setTransform(1, 0, 0, 1, 0, 0);
-
-    if (subtype === "Alpha" && transferMap) {
-      layerCtx.filter = this.filterFactory.addAlphaFilter(transferMap);
-    } else if (subtype === "Luminosity") {
-      layerCtx.filter = this.filterFactory.addLuminosityFilter(transferMap);
-    }
-
-    const clip = new Path2D();
-    clip.rect(layerOffsetX, layerOffsetY, width, height);
-    layerCtx.clip(clip);
-    layerCtx.globalCompositeOperation = "destination-in";
-    layerCtx.drawImage(
-      maskCanvas,
-      maskX,
-      maskY,
-      width,
-      height,
-      layerOffsetX,
-      layerOffsetY,
-      width,
-      height
-    );
-    layerCtx.restore();
   }
 
   save() {
@@ -1885,19 +1888,15 @@ class CanvasGraphics {
       return;
     }
 
-    const newPath = new Path2D();
-    const invTransf = ctx.getTransform().invertSelf();
-    for (const { transform, x, y, fontSize, path } of paths) {
-      newPath.addPath(
-        path,
-        new DOMMatrix(transform)
-          .preMultiplySelf(invTransf)
-          .translate(x, y)
-          .scale(fontSize, -fontSize)
-      );
+    ctx.save();
+    ctx.beginPath();
+    for (const path of paths) {
+      ctx.setTransform(...path.transform);
+      ctx.translate(path.x, path.y);
+      path.addToPath(ctx, path.fontSize);
     }
-
-    ctx.clip(newPath);
+    ctx.restore();
+    ctx.clip();
     ctx.beginPath();
     delete this.pendingTextPaths;
   }
@@ -2006,16 +2005,7 @@ class CanvasGraphics {
     this.moveText(0, this.current.leading);
   }
 
-  #getScaledPath(path, currentTransform, transform) {
-    const newPath = new Path2D();
-    newPath.addPath(
-      path,
-      new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform)
-    );
-    return newPath;
-  }
-
-  paintChar(character, x, y, patternFillTransform, patternStrokeTransform) {
+  paintChar(character, x, y, patternTransform) {
     const ctx = this.ctx;
     const current = this.current;
     const font = current.font;
@@ -2027,50 +2017,31 @@ class CanvasGraphics {
       textRenderingMode & TextRenderingMode.ADD_TO_PATH_FLAG
     );
     const patternFill = current.patternFill && !font.missingFile;
-    const patternStroke = current.patternStroke && !font.missingFile;
 
-    let path;
-    if (
-      font.disableFontFace ||
-      isAddToPathSet ||
-      patternFill ||
-      patternStroke
-    ) {
-      path = font.getPathGenerator(this.commonObjs, character);
+    let addToPath;
+    if (font.disableFontFace || isAddToPathSet || patternFill) {
+      addToPath = font.getPathGenerator(this.commonObjs, character);
     }
 
-    if (font.disableFontFace || patternFill || patternStroke) {
+    if (font.disableFontFace || patternFill) {
       ctx.save();
       ctx.translate(x, y);
-      ctx.scale(fontSize, -fontSize);
+      ctx.beginPath();
+      addToPath(ctx, fontSize);
+      if (patternTransform) {
+        ctx.setTransform(...patternTransform);
+      }
       if (
         fillStrokeMode === TextRenderingMode.FILL ||
         fillStrokeMode === TextRenderingMode.FILL_STROKE
       ) {
-        if (patternFillTransform) {
-          const currentTransform = ctx.getTransform();
-          ctx.setTransform(...patternFillTransform);
-          ctx.fill(
-            this.#getScaledPath(path, currentTransform, patternFillTransform)
-          );
-        } else {
-          ctx.fill(path);
-        }
+        ctx.fill();
       }
       if (
         fillStrokeMode === TextRenderingMode.STROKE ||
         fillStrokeMode === TextRenderingMode.FILL_STROKE
       ) {
-        if (patternStrokeTransform) {
-          const currentTransform = ctx.getTransform();
-          ctx.setTransform(...patternStrokeTransform);
-          ctx.stroke(
-            this.#getScaledPath(path, currentTransform, patternStrokeTransform)
-          );
-        } else {
-          ctx.lineWidth /= fontSize;
-          ctx.stroke(path);
-        }
+        ctx.stroke();
       }
       ctx.restore();
     } else {
@@ -2095,7 +2066,7 @@ class CanvasGraphics {
         x,
         y,
         fontSize,
-        path,
+        addToPath,
       });
     }
   }
@@ -2160,7 +2131,7 @@ class CanvasGraphics {
       ctx.scale(textHScale, 1);
     }
 
-    let patternFillTransform, patternStrokeTransform;
+    let patternTransform;
     if (current.patternFill) {
       ctx.save();
       const pattern = current.fillColor.getPattern(
@@ -2169,22 +2140,9 @@ class CanvasGraphics {
         getCurrentTransformInverse(ctx),
         PathType.FILL
       );
-      patternFillTransform = getCurrentTransform(ctx);
+      patternTransform = getCurrentTransform(ctx);
       ctx.restore();
       ctx.fillStyle = pattern;
-    }
-
-    if (current.patternStroke) {
-      ctx.save();
-      const pattern = current.strokeColor.getPattern(
-        ctx,
-        this,
-        getCurrentTransformInverse(ctx),
-        PathType.STROKE
-      );
-      patternStrokeTransform = getCurrentTransform(ctx);
-      ctx.restore();
-      ctx.strokeStyle = pattern;
     }
 
     let lineWidth = current.lineWidth;
@@ -2279,13 +2237,7 @@ class CanvasGraphics {
           // common case
           ctx.fillText(character, scaledX, scaledY);
         } else {
-          this.paintChar(
-            character,
-            scaledX,
-            scaledY,
-            patternFillTransform,
-            patternStrokeTransform
-          );
+          this.paintChar(character, scaledX, scaledY, patternTransform);
           if (accent) {
             const scaledAccentX =
               scaledX + (fontSize * accent.offset.x) / fontSizeScale;
@@ -2295,8 +2247,7 @@ class CanvasGraphics {
               accent.fontChar,
               scaledAccentX,
               scaledAccentY,
-              patternFillTransform,
-              patternStrokeTransform
+              patternTransform
             );
           }
         }
@@ -2404,8 +2355,8 @@ class CanvasGraphics {
       const color = IR[1];
       const baseTransform = this.baseTransform || getCurrentTransform(this.ctx);
       const canvasGraphicsFactory = {
-        createCanvasGraphics: ctx =>
-          new CanvasGraphics(
+        createCanvasGraphics: ctx => {
+          return new CanvasGraphics(
             ctx,
             this.commonObjs,
             this.objs,
@@ -2415,7 +2366,8 @@ class CanvasGraphics {
               optionalContentConfig: this.optionalContentConfig,
               markedContentStack: this.markedContentStack,
             }
-          ),
+          );
+        },
       };
       pattern = new TilingPattern(
         IR,
@@ -2432,7 +2384,6 @@ class CanvasGraphics {
 
   setStrokeColorN() {
     this.current.strokeColor = this.getColorN_Pattern(arguments);
-    this.current.patternStroke = true;
   }
 
   setFillColorN() {
@@ -2441,26 +2392,15 @@ class CanvasGraphics {
   }
 
   setStrokeRGBColor(r, g, b) {
-    this.ctx.strokeStyle = this.current.strokeColor = Util.makeHexColor(
-      r,
-      g,
-      b
-    );
-    this.current.patternStroke = false;
-  }
-
-  setStrokeTransparent() {
-    this.ctx.strokeStyle = this.current.strokeColor = "transparent";
-    this.current.patternStroke = false;
+    const color = Util.makeHexColor(r, g, b);
+    this.ctx.strokeStyle = color;
+    this.current.strokeColor = color;
   }
 
   setFillRGBColor(r, g, b) {
-    this.ctx.fillStyle = this.current.fillColor = Util.makeHexColor(r, g, b);
-    this.current.patternFill = false;
-  }
-
-  setFillTransparent() {
-    this.ctx.fillStyle = this.current.fillColor = "transparent";
+    const color = Util.makeHexColor(r, g, b);
+    this.ctx.fillStyle = color;
+    this.current.fillColor = color;
     this.current.patternFill = false;
   }
 
@@ -2532,9 +2472,10 @@ class CanvasGraphics {
     this.save();
     this.baseTransformStack.push(this.baseTransform);
 
-    if (matrix) {
+    if (Array.isArray(matrix) && matrix.length === 6) {
       this.transform(...matrix);
     }
+
     this.baseTransform = getCurrentTransform(this.ctx);
 
     if (bbox) {
@@ -2618,8 +2559,18 @@ class CanvasGraphics {
     // too small and make the canvas at least 1x1 pixels.
     const offsetX = Math.floor(bounds[0]);
     const offsetY = Math.floor(bounds[1]);
-    const drawnWidth = Math.max(Math.ceil(bounds[2]) - offsetX, 1);
-    const drawnHeight = Math.max(Math.ceil(bounds[3]) - offsetY, 1);
+    let drawnWidth = Math.max(Math.ceil(bounds[2]) - offsetX, 1);
+    let drawnHeight = Math.max(Math.ceil(bounds[3]) - offsetY, 1);
+    let scaleX = 1,
+      scaleY = 1;
+    if (drawnWidth > MAX_GROUP_SIZE) {
+      scaleX = drawnWidth / MAX_GROUP_SIZE;
+      drawnWidth = MAX_GROUP_SIZE;
+    }
+    if (drawnHeight > MAX_GROUP_SIZE) {
+      scaleY = drawnHeight / MAX_GROUP_SIZE;
+      drawnHeight = MAX_GROUP_SIZE;
+    }
 
     this.current.startNewPathAndClipBox([0, 0, drawnWidth, drawnHeight]);
 
@@ -2637,6 +2588,7 @@ class CanvasGraphics {
 
     // Since we created a new canvas that is just the size of the bounding box
     // we have to translate the group ctx.
+    groupCtx.scale(1 / scaleX, 1 / scaleY);
     groupCtx.translate(-offsetX, -offsetY);
     groupCtx.transform(...currentTransform);
 
@@ -2647,6 +2599,8 @@ class CanvasGraphics {
         context: groupCtx,
         offsetX,
         offsetY,
+        scaleX,
+        scaleY,
         subtype: group.smask.subtype,
         backdrop: group.smask.backdrop,
         transferMap: group.smask.transferMap || null,
@@ -2657,6 +2611,7 @@ class CanvasGraphics {
       // right location.
       currentCtx.setTransform(1, 0, 0, 1, 0, 0);
       currentCtx.translate(offsetX, offsetY);
+      currentCtx.scale(scaleX, scaleY);
       currentCtx.save();
     }
     // The transparency group inherits all off the current graphics state
@@ -2718,7 +2673,7 @@ class CanvasGraphics {
       this.ctx.setTransform(...this.baseTransform);
     }
 
-    if (rect) {
+    if (Array.isArray(rect) && rect.length === 4) {
       const width = rect[2] - rect[0];
       const height = rect[3] - rect[1];
 
@@ -2758,12 +2713,9 @@ class CanvasGraphics {
       } else {
         resetCtxToDefault(this.ctx);
 
-        // Consume a potential path before clipping.
-        this.endPath();
-
         this.ctx.rect(rect[0], rect[1], width, height);
         this.ctx.clip();
-        this.ctx.beginPath();
+        this.endPath();
       }
     }
 

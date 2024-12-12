@@ -13,8 +13,6 @@
  * limitations under the License.
  */
 
-/** @typedef {import("./event_utils.js").EventBus} EventBus */
-
 import {
   CursorTool,
   ScrollMode,
@@ -49,22 +47,19 @@ import { PagesCountLimit } from "./pdf_viewer.js";
  *   select tool.
  * @property {HTMLButtonElement} cursorHandToolButton - Button to enable the
  *   hand tool.
- * @property {HTMLButtonElement} imageAltTextSettingsButton - Button for opening
- *   the image alt-text settings dialog.
  * @property {HTMLButtonElement} documentPropertiesButton - Button for opening
  *   the document properties dialog.
  */
 
 class SecondaryToolbar {
-  #opts;
-
   /**
    * @param {SecondaryToolbarOptions} options
    * @param {EventBus} eventBus
    */
-  constructor(options, eventBus) {
-    this.#opts = options;
-    const buttons = [
+  constructor(options, eventBus, externalServices) {
+    this.toolbar = options.toolbar;
+    this.toggleButton = options.toggleButton;
+    this.buttons = [
       {
         element: options.presentationModeButton,
         eventName: "presentationmode",
@@ -140,30 +135,35 @@ class SecondaryToolbar {
         close: true,
       },
       {
-        element: options.imageAltTextSettingsButton,
-        eventName: "imagealttextsettings",
-        close: true,
-      },
-      {
         element: options.documentPropertiesButton,
         eventName: "documentproperties",
         close: true,
       },
     ];
     if (typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")) {
-      buttons.push({
+      this.buttons.push({
         element: options.openFileButton,
         eventName: "openfile",
         close: true,
       });
     }
+    this.items = {
+      firstPage: options.firstPageButton,
+      lastPage: options.lastPageButton,
+      pageRotateCw: options.pageRotateCwButton,
+      pageRotateCcw: options.pageRotateCcwButton,
+    };
 
     this.eventBus = eventBus;
+    this.externalServices = externalServices;
     this.opened = false;
 
     // Bind the event listeners for click, cursor tool, and scroll/spread mode
     // actions.
-    this.#bindListeners(buttons);
+    this.#bindClickListeners();
+    this.#bindCursorToolsListener(options);
+    this.#bindScrollModeListener(options);
+    this.#bindSpreadModeListener(options);
 
     this.reset();
   }
@@ -191,104 +191,101 @@ class SecondaryToolbar {
     this.#updateUIState();
 
     // Reset the Scroll/Spread buttons too, since they're document specific.
-    this.eventBus.dispatch("switchcursortool", { source: this, reset: true });
-    this.#scrollModeChanged({ mode: ScrollMode.VERTICAL });
-    this.#spreadModeChanged({ mode: SpreadMode.NONE });
+    this.eventBus.dispatch("secondarytoolbarreset", { source: this });
   }
 
   #updateUIState() {
-    const {
-      firstPageButton,
-      lastPageButton,
-      pageRotateCwButton,
-      pageRotateCcwButton,
-    } = this.#opts;
-
-    firstPageButton.disabled = this.pageNumber <= 1;
-    lastPageButton.disabled = this.pageNumber >= this.pagesCount;
-    pageRotateCwButton.disabled = this.pagesCount === 0;
-    pageRotateCcwButton.disabled = this.pagesCount === 0;
+    this.items.firstPage.disabled = this.pageNumber <= 1;
+    this.items.lastPage.disabled = this.pageNumber >= this.pagesCount;
+    this.items.pageRotateCw.disabled = this.pagesCount === 0;
+    this.items.pageRotateCcw.disabled = this.pagesCount === 0;
   }
 
-  #bindListeners(buttons) {
-    const { eventBus } = this;
-    const { toggleButton } = this.#opts;
+  #bindClickListeners() {
     // Button to toggle the visibility of the secondary toolbar.
-    toggleButton.addEventListener("click", this.toggle.bind(this));
+    this.toggleButton.addEventListener("click", this.toggle.bind(this));
 
     // All items within the secondary toolbar.
-    for (const { element, eventName, close, eventDetails } of buttons) {
+    for (const { element, eventName, close, eventDetails } of this.buttons) {
       element.addEventListener("click", evt => {
         if (eventName !== null) {
-          eventBus.dispatch(eventName, { source: this, ...eventDetails });
+          this.eventBus.dispatch(eventName, { source: this, ...eventDetails });
         }
         if (close) {
           this.close();
         }
-        eventBus.dispatch("reporttelemetry", {
-          source: this,
-          details: {
-            type: "buttons",
-            data: { id: element.id },
-          },
+        this.externalServices.reportTelemetry({
+          type: "buttons",
+          data: { id: element.id },
         });
       });
     }
-
-    eventBus._on("cursortoolchanged", this.#cursorToolChanged.bind(this));
-    eventBus._on("scrollmodechanged", this.#scrollModeChanged.bind(this));
-    eventBus._on("spreadmodechanged", this.#spreadModeChanged.bind(this));
   }
 
-  #cursorToolChanged({ tool, disabled }) {
-    const { cursorSelectToolButton, cursorHandToolButton } = this.#opts;
-
-    toggleCheckedBtn(cursorSelectToolButton, tool === CursorTool.SELECT);
-    toggleCheckedBtn(cursorHandToolButton, tool === CursorTool.HAND);
-
-    cursorSelectToolButton.disabled = disabled;
-    cursorHandToolButton.disabled = disabled;
+  #bindCursorToolsListener({ cursorSelectToolButton, cursorHandToolButton }) {
+    this.eventBus._on("cursortoolchanged", ({ tool }) => {
+      toggleCheckedBtn(cursorSelectToolButton, tool === CursorTool.SELECT);
+      toggleCheckedBtn(cursorHandToolButton, tool === CursorTool.HAND);
+    });
   }
 
-  #scrollModeChanged({ mode }) {
-    const {
-      scrollPageButton,
-      scrollVerticalButton,
-      scrollHorizontalButton,
-      scrollWrappedButton,
-      spreadNoneButton,
-      spreadOddButton,
-      spreadEvenButton,
-    } = this.#opts;
+  #bindScrollModeListener({
+    scrollPageButton,
+    scrollVerticalButton,
+    scrollHorizontalButton,
+    scrollWrappedButton,
+    spreadNoneButton,
+    spreadOddButton,
+    spreadEvenButton,
+  }) {
+    const scrollModeChanged = ({ mode }) => {
+      toggleCheckedBtn(scrollPageButton, mode === ScrollMode.PAGE);
+      toggleCheckedBtn(scrollVerticalButton, mode === ScrollMode.VERTICAL);
+      toggleCheckedBtn(scrollHorizontalButton, mode === ScrollMode.HORIZONTAL);
+      toggleCheckedBtn(scrollWrappedButton, mode === ScrollMode.WRAPPED);
 
-    toggleCheckedBtn(scrollPageButton, mode === ScrollMode.PAGE);
-    toggleCheckedBtn(scrollVerticalButton, mode === ScrollMode.VERTICAL);
-    toggleCheckedBtn(scrollHorizontalButton, mode === ScrollMode.HORIZONTAL);
-    toggleCheckedBtn(scrollWrappedButton, mode === ScrollMode.WRAPPED);
+      // Permanently *disable* the Scroll buttons when PAGE-scrolling is being
+      // enforced for *very* long/large documents; please see the `BaseViewer`.
+      const forceScrollModePage =
+        this.pagesCount > PagesCountLimit.FORCE_SCROLL_MODE_PAGE;
+      scrollPageButton.disabled = forceScrollModePage;
+      scrollVerticalButton.disabled = forceScrollModePage;
+      scrollHorizontalButton.disabled = forceScrollModePage;
+      scrollWrappedButton.disabled = forceScrollModePage;
 
-    // Permanently *disable* the Scroll buttons when PAGE-scrolling is being
-    // enforced for *very* long/large documents; please see the `BaseViewer`.
-    const forceScrollModePage =
-      this.pagesCount > PagesCountLimit.FORCE_SCROLL_MODE_PAGE;
-    scrollPageButton.disabled = forceScrollModePage;
-    scrollVerticalButton.disabled = forceScrollModePage;
-    scrollHorizontalButton.disabled = forceScrollModePage;
-    scrollWrappedButton.disabled = forceScrollModePage;
+      // Temporarily *disable* the Spread buttons when horizontal scrolling is
+      // enabled, since the non-default Spread modes doesn't affect the layout.
+      const isHorizontal = mode === ScrollMode.HORIZONTAL;
+      spreadNoneButton.disabled = isHorizontal;
+      spreadOddButton.disabled = isHorizontal;
+      spreadEvenButton.disabled = isHorizontal;
+    };
+    this.eventBus._on("scrollmodechanged", scrollModeChanged);
 
-    // Temporarily *disable* the Spread buttons when horizontal scrolling is
-    // enabled, since the non-default Spread modes doesn't affect the layout.
-    const isHorizontal = mode === ScrollMode.HORIZONTAL;
-    spreadNoneButton.disabled = isHorizontal;
-    spreadOddButton.disabled = isHorizontal;
-    spreadEvenButton.disabled = isHorizontal;
+    this.eventBus._on("secondarytoolbarreset", evt => {
+      if (evt.source === this) {
+        scrollModeChanged({ mode: ScrollMode.VERTICAL });
+      }
+    });
   }
 
-  #spreadModeChanged({ mode }) {
-    const { spreadNoneButton, spreadOddButton, spreadEvenButton } = this.#opts;
+  #bindSpreadModeListener({
+    spreadNoneButton,
+    spreadOddButton,
+    spreadEvenButton,
+  }) {
+    const spreadModeChanged = ({ mode }) => {
+      toggleCheckedBtn(spreadNoneButton, mode === SpreadMode.NONE);
+      toggleCheckedBtn(spreadOddButton, mode === SpreadMode.ODD);
+      toggleCheckedBtn(spreadEvenButton, mode === SpreadMode.EVEN);
+    };
+    this.eventBus._on("spreadmodechanged", spreadModeChanged);
 
-    toggleCheckedBtn(spreadNoneButton, mode === SpreadMode.NONE);
-    toggleCheckedBtn(spreadOddButton, mode === SpreadMode.ODD);
-    toggleCheckedBtn(spreadEvenButton, mode === SpreadMode.EVEN);
+    this.eventBus._on("secondarytoolbarreset", evt => {
+      if (evt.source === this) {
+        spreadModeChanged({ mode: SpreadMode.NONE });
+      }
+    });
   }
 
   open() {
@@ -296,9 +293,7 @@ class SecondaryToolbar {
       return;
     }
     this.opened = true;
-
-    const { toggleButton, toolbar } = this.#opts;
-    toggleExpandedBtn(toggleButton, true, toolbar);
+    toggleExpandedBtn(this.toggleButton, true, this.toolbar);
   }
 
   close() {
@@ -306,9 +301,7 @@ class SecondaryToolbar {
       return;
     }
     this.opened = false;
-
-    const { toggleButton, toolbar } = this.#opts;
-    toggleExpandedBtn(toggleButton, false, toolbar);
+    toggleExpandedBtn(this.toggleButton, false, this.toolbar);
   }
 
   toggle() {

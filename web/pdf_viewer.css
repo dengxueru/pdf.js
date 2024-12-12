@@ -12,12 +12,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-@import url(message_bar.css);
-@import url(dialog.css);
 @import url(text_layer_builder.css);
 @import url(annotation_layer_builder.css);
 @import url(xfa_layer_builder.css);
-/* Ignored in GECKOVIEW builds: */
 @import url(annotation_editor_layer_builder.css);
 
 :root {
@@ -48,8 +45,7 @@
   transform: rotate(270deg) translateX(-100%);
 }
 
-#hiddenCopyElement,
-.hiddenCanvasElement {
+#hiddenCopyElement {
   position: absolute;
   top: 0;
   left: 0;
@@ -62,47 +58,18 @@
   /* Define this variable here and not in :root to avoid to reflow all the UI
      when scaling (see #15929). */
   --scale-factor: 1;
-  --page-bg-color: unset;
 
   padding-bottom: var(--pdfViewer-padding-bottom);
+}
 
-  --hcm-highlight-filter: none;
-  --hcm-highlight-selected-filter: none;
-
-  @media screen and (forced-colors: active) {
-    --hcm-highlight-filter: invert(100%);
-  }
-
-  &.copyAll {
-    cursor: wait;
-  }
-
-  .canvasWrapper {
-    overflow: hidden;
-    width: 100%;
-    height: 100%;
-
-    canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      margin: 0;
-      display: block;
-      width: 100%;
-      height: 100%;
-      contain: content;
-
-      .structTree {
-        contain: strict;
-      }
-    }
-  }
+.pdfViewer .canvasWrapper {
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
 }
 
 .pdfViewer .page {
-  --scale-round-x: 1px;
-  --scale-round-y: 1px;
-
   direction: ltr;
   width: 816px;
   height: 1056px;
@@ -111,7 +78,7 @@
   overflow: visible;
   border: var(--page-border);
   background-clip: content-box;
-  background-color: var(--page-bg-color, rgb(255 255 255));
+  background-color: rgba(255, 255, 255, 1);
 }
 
 .pdfViewer .dummyPage {
@@ -177,6 +144,24 @@
   margin-inline: 5px;
 }
 /*#endif*/
+
+.pdfViewer .page canvas {
+  margin: 0;
+  display: block;
+}
+
+.pdfViewer .page canvas .structTree {
+  contain: strict;
+}
+
+.pdfViewer .page canvas[hidden] {
+  display: none;
+}
+
+.pdfViewer .page canvas[zooming] {
+  width: 100%;
+  height: 100%;
+}
 
 .pdfViewer .page.loadingIcon::after {
   position: absolute;

@@ -35,10 +35,7 @@ function applyBoundingBox(ctx, bbox) {
 
 class BaseShadingPattern {
   constructor() {
-    if (
-      (typeof PDFJSDev === "undefined" || PDFJSDev.test("TESTING")) &&
-      this.constructor === BaseShadingPattern
-    ) {
+    if (this.constructor === BaseShadingPattern) {
       unreachable("Cannot initialize BaseShadingPattern.");
     }
   }
@@ -103,7 +100,8 @@ class RadialAxialShadingPattern extends BaseShadingPattern {
       const tmpCanvas = owner.cachedCanvases.getCanvas(
         "pattern",
         width,
-        height
+        height,
+        true
       );
 
       const tmpCtx = tmpCanvas.context;
@@ -359,7 +357,8 @@ class MeshShadingPattern extends BaseShadingPattern {
     const tmpCanvas = cachedCanvases.getCanvas(
       "mesh",
       paddedWidth,
-      paddedHeight
+      paddedHeight,
+      false
     );
     const tmpCtx = tmpCanvas.context;
 
@@ -456,7 +455,7 @@ class TilingPattern {
 
   constructor(IR, color, ctx, canvasGraphicsFactory, baseTransform) {
     this.operatorList = IR[2];
-    this.matrix = IR[3];
+    this.matrix = IR[3] || [1, 0, 0, 1, 0, 0];
     this.bbox = IR[4];
     this.xstep = IR[5];
     this.ystep = IR[6];
@@ -469,17 +468,14 @@ class TilingPattern {
   }
 
   createPatternCanvas(owner) {
-    const {
-      bbox,
-      operatorList,
-      paintType,
-      tilingType,
-      color,
-      canvasGraphicsFactory,
-    } = this;
-    let { xstep, ystep } = this;
-    xstep = Math.abs(xstep);
-    ystep = Math.abs(ystep);
+    const operatorList = this.operatorList;
+    const bbox = this.bbox;
+    const xstep = this.xstep;
+    const ystep = this.ystep;
+    const paintType = this.paintType;
+    const tilingType = this.tilingType;
+    const color = this.color;
+    const canvasGraphicsFactory = this.canvasGraphicsFactory;
 
     info("TilingType: " + tilingType);
 
@@ -500,61 +496,43 @@ class TilingPattern {
     //   bbox boundary will be missing. This is INCORRECT behavior.
     //   "Figures on adjacent tiles should not overlap" (PDF spec 8.7.3.1),
     //   but overlapping cells without common pixels are still valid.
+    //   TODO: Fix the implementation, to allow this scenario to be painted
+    //   correctly.
 
     const x0 = bbox[0],
       y0 = bbox[1],
       x1 = bbox[2],
       y1 = bbox[3];
-    const width = x1 - x0;
-    const height = y1 - y0;
 
     // Obtain scale from matrix and current transformation matrix.
     const matrixScale = Util.singularValueDecompose2dScale(this.matrix);
     const curMatrixScale = Util.singularValueDecompose2dScale(
       this.baseTransform
     );
-    const combinedScaleX = matrixScale[0] * curMatrixScale[0];
-    const combinedScaleY = matrixScale[1] * curMatrixScale[1];
-
-    let canvasWidth = width,
-      canvasHeight = height,
-      redrawHorizontally = false,
-      redrawVertically = false;
-
-    const xScaledStep = Math.ceil(xstep * combinedScaleX);
-    const yScaledStep = Math.ceil(ystep * combinedScaleY);
-    const xScaledWidth = Math.ceil(width * combinedScaleX);
-    const yScaledHeight = Math.ceil(height * combinedScaleY);
-
-    if (xScaledStep >= xScaledWidth) {
-      canvasWidth = xstep;
-    } else {
-      redrawHorizontally = true;
-    }
-    if (yScaledStep >= yScaledHeight) {
-      canvasHeight = ystep;
-    } else {
-      redrawVertically = true;
-    }
+    const combinedScale = [
+      matrixScale[0] * curMatrixScale[0],
+      matrixScale[1] * curMatrixScale[1],
+    ];
 
     // Use width and height values that are as close as possible to the end
     // result when the pattern is used. Too low value makes the pattern look
     // blurry. Too large value makes it look too crispy.
     const dimx = this.getSizeAndScale(
-      canvasWidth,
+      xstep,
       this.ctx.canvas.width,
-      combinedScaleX
+      combinedScale[0]
     );
     const dimy = this.getSizeAndScale(
-      canvasHeight,
+      ystep,
       this.ctx.canvas.height,
-      combinedScaleY
+      combinedScale[1]
     );
 
     const tmpCanvas = owner.cachedCanvases.getCanvas(
       "pattern",
       dimx.size,
-      dimy.size
+      dimy.size,
+      true
     );
     const tmpCtx = tmpCanvas.context;
     const graphics = canvasGraphicsFactory.createCanvasGraphics(tmpCtx);
@@ -562,14 +540,29 @@ class TilingPattern {
 
     this.setFillAndStrokeStyleToContext(graphics, paintType, color);
 
-    tmpCtx.translate(-dimx.scale * x0, -dimy.scale * y0);
+    let adjustedX0 = x0;
+    let adjustedY0 = y0;
+    let adjustedX1 = x1;
+    let adjustedY1 = y1;
+    // Some bounding boxes have negative x0/y0 coordinates which will cause the
+    // some of the drawing to be off of the canvas. To avoid this shift the
+    // bounding box over.
+    if (x0 < 0) {
+      adjustedX0 = 0;
+      adjustedX1 += Math.abs(x0);
+    }
+    if (y0 < 0) {
+      adjustedY0 = 0;
+      adjustedY1 += Math.abs(y0);
+    }
+    tmpCtx.translate(-(dimx.scale * adjustedX0), -(dimy.scale * adjustedY0));
     graphics.transform(dimx.scale, 0, 0, dimy.scale, 0, 0);
 
     // To match CanvasGraphics beginDrawing we must save the context here or
     // else we end up with unbalanced save/restores.
     tmpCtx.save();
 
-    this.clipBbox(graphics, x0, y0, x1, y1);
+    this.clipBbox(graphics, adjustedX0, adjustedY0, adjustedX1, adjustedY1);
 
     graphics.baseTransform = getCurrentTransform(graphics.ctx);
 
@@ -577,81 +570,18 @@ class TilingPattern {
 
     graphics.endDrawing();
 
-    tmpCtx.restore();
-
-    if (redrawHorizontally || redrawVertically) {
-      // The tile is overlapping itself, so we create a new tile with
-      // dimensions xstep * ystep.
-      // Then we draw the overlapping parts of the original tile on the new
-      // tile.
-      // Just as a side note, the code here works correctly even if we don't
-      // have to redraw the tile horizontally or vertically. In that case, the
-      // original tile is drawn on the new tile only once, but it's useless.
-      const image = tmpCanvas.canvas;
-      if (redrawHorizontally) {
-        canvasWidth = xstep;
-      }
-      if (redrawVertically) {
-        canvasHeight = ystep;
-      }
-
-      const dimx2 = this.getSizeAndScale(
-        canvasWidth,
-        this.ctx.canvas.width,
-        combinedScaleX
-      );
-      const dimy2 = this.getSizeAndScale(
-        canvasHeight,
-        this.ctx.canvas.height,
-        combinedScaleY
-      );
-
-      const xSize = dimx2.size;
-      const ySize = dimy2.size;
-      const tmpCanvas2 = owner.cachedCanvases.getCanvas(
-        "pattern-workaround",
-        xSize,
-        ySize
-      );
-      const tmpCtx2 = tmpCanvas2.context;
-      const ii = redrawHorizontally ? Math.floor(width / xstep) : 0;
-      const jj = redrawVertically ? Math.floor(height / ystep) : 0;
-
-      // Draw the overlapping parts of the original tile on the new tile.
-      for (let i = 0; i <= ii; i++) {
-        for (let j = 0; j <= jj; j++) {
-          tmpCtx2.drawImage(
-            image,
-            xSize * i,
-            ySize * j,
-            xSize,
-            ySize,
-            0,
-            0,
-            xSize,
-            ySize
-          );
-        }
-      }
-      return {
-        canvas: tmpCanvas2.canvas,
-        scaleX: dimx2.scale,
-        scaleY: dimy2.scale,
-        offsetX: x0,
-        offsetY: y0,
-      };
-    }
-
     return {
       canvas: tmpCanvas.canvas,
       scaleX: dimx.scale,
       scaleY: dimy.scale,
-      offsetX: x0,
-      offsetY: y0,
+      offsetX: adjustedX0,
+      offsetY: adjustedY0,
     };
   }
 
   getSizeAndScale(step, realOutputSize, scale) {
+    // xstep / ystep may be negative -- normalize.
+    step = Math.abs(step);
     // MAX_PATTERN_SIZE is used to avoid OOM situation.
     // Use the destination canvas's size if it is bigger than the hard-coded
     // limit of MAX_PATTERN_SIZE to avoid clipping patterns that cover the

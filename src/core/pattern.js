@@ -16,21 +16,14 @@
 import {
   assert,
   FormatError,
-  IDENTITY_MATRIX,
   info,
   unreachable,
   Util,
   warn,
 } from "../shared/util.js";
-import {
-  isBooleanArray,
-  isNumberArray,
-  lookupMatrix,
-  lookupNormalRect,
-  MissingDataException,
-} from "./core_utils.js";
 import { BaseStream } from "./base_stream.js";
 import { ColorSpace } from "./colorspace.js";
+import { MissingDataException } from "./core_utils.js";
 
 const ShadingType = {
   FUNCTION_BASED: 1,
@@ -98,10 +91,7 @@ class BaseShading {
   static SMALL_NUMBER = 1e-6;
 
   constructor() {
-    if (
-      (typeof PDFJSDev === "undefined" || PDFJSDev.test("TESTING")) &&
-      this.constructor === BaseShading
-    ) {
+    if (this.constructor === BaseShading) {
       unreachable("Cannot initialize BaseShading.");
     }
   }
@@ -116,17 +106,8 @@ class BaseShading {
 class RadialAxialShading extends BaseShading {
   constructor(dict, xref, resources, pdfFunctionFactory, localColorSpaceCache) {
     super();
-    this.shadingType = dict.get("ShadingType");
-    let coordsLen = 0;
-    if (this.shadingType === ShadingType.AXIAL) {
-      coordsLen = 4;
-    } else if (this.shadingType === ShadingType.RADIAL) {
-      coordsLen = 6;
-    }
     this.coordsArr = dict.getArray("Coords");
-    if (!isNumberArray(this.coordsArr, coordsLen)) {
-      throw new FormatError("RadialAxialShading: Invalid /Coords array.");
-    }
+    this.shadingType = dict.get("ShadingType");
     const cs = ColorSpace.parse({
       cs: dict.getRaw("CS") || dict.getRaw("ColorSpace"),
       xref,
@@ -134,20 +115,26 @@ class RadialAxialShading extends BaseShading {
       pdfFunctionFactory,
       localColorSpaceCache,
     });
-    this.bbox = lookupNormalRect(dict.getArray("BBox"), null);
+    const bbox = dict.getArray("BBox");
+    this.bbox =
+      Array.isArray(bbox) && bbox.length === 4
+        ? Util.normalizeRect(bbox)
+        : null;
 
     let t0 = 0.0,
       t1 = 1.0;
-    const domainArr = dict.getArray("Domain");
-    if (isNumberArray(domainArr, 2)) {
-      [t0, t1] = domainArr;
+    if (dict.has("Domain")) {
+      const domainArr = dict.getArray("Domain");
+      t0 = domainArr[0];
+      t1 = domainArr[1];
     }
 
     let extendStart = false,
       extendEnd = false;
-    const extendArr = dict.getArray("Extend");
-    if (isBooleanArray(extendArr, 2)) {
-      [extendStart, extendEnd] = extendArr;
+    if (dict.has("Extend")) {
+      const extendArr = dict.getArray("Extend");
+      extendStart = extendArr[0];
+      extendEnd = extendArr[1];
     }
 
     if (
@@ -284,7 +271,8 @@ class RadialAxialShading extends BaseShading {
   }
 
   getIR() {
-    const { coordsArr, shadingType } = this;
+    const coordsArr = this.coordsArr;
+    const shadingType = this.shadingType;
     let type, p0, p1, r0, r1;
     if (shadingType === ShadingType.AXIAL) {
       p0 = [coordsArr[0], coordsArr[1]];
@@ -423,26 +411,29 @@ class MeshStreamReader {
   }
 }
 
-let bCache = Object.create(null);
-
-function buildB(count) {
-  const lut = [];
-  for (let i = 0; i <= count; i++) {
-    const t = i / count,
-      t_ = 1 - t;
-    lut.push(
-      new Float32Array([t_ ** 3, 3 * t * t_ ** 2, 3 * t ** 2 * t_, t ** 3])
-    );
+const getB = (function getBClosure() {
+  function buildB(count) {
+    const lut = [];
+    for (let i = 0; i <= count; i++) {
+      const t = i / count,
+        t_ = 1 - t;
+      lut.push(
+        new Float32Array([
+          t_ * t_ * t_,
+          3 * t * t_ * t_,
+          3 * t * t * t_,
+          t * t * t,
+        ])
+      );
+    }
+    return lut;
   }
-  return lut;
-}
-function getB(count) {
-  return (bCache[count] ||= buildB(count));
-}
+  const cache = Object.create(null);
 
-function clearPatternCaches() {
-  bCache = Object.create(null);
-}
+  return function (count) {
+    return (cache[count] ||= buildB(count));
+  };
+})();
 
 class MeshShading extends BaseShading {
   static MIN_SPLIT_PATCH_CHUNKS_AMOUNT = 3;
@@ -465,7 +456,11 @@ class MeshShading extends BaseShading {
     }
     const dict = stream.dict;
     this.shadingType = dict.get("ShadingType");
-    this.bbox = lookupNormalRect(dict.getArray("BBox"), null);
+    const bbox = dict.getArray("BBox");
+    this.bbox =
+      Array.isArray(bbox) && bbox.length === 4
+        ? Util.normalizeRect(bbox)
+        : null;
     const cs = ColorSpace.parse({
       cs: dict.getRaw("CS") || dict.getRaw("ColorSpace"),
       xref,
@@ -964,20 +959,13 @@ class MeshShading extends BaseShading {
   }
 
   getIR() {
-    const { bounds } = this;
-    // Ensure that the shading has non-zero width and height, to prevent errors
-    // in `pattern_helper.js` (fixes issue17848.pdf).
-    if (bounds[2] - bounds[0] === 0 || bounds[3] - bounds[1] === 0) {
-      throw new FormatError(`Invalid MeshShading bounds: [${bounds}].`);
-    }
-
     return [
       "Mesh",
       this.shadingType,
       this.coords,
       this.colors,
       this.figures,
-      bounds,
+      this.bounds,
       this.bbox,
       this.background,
     ];
@@ -991,28 +979,17 @@ class DummyShading extends BaseShading {
 }
 
 function getTilingPatternIR(operatorList, dict, color) {
-  const matrix = lookupMatrix(dict.getArray("Matrix"), IDENTITY_MATRIX);
-  const bbox = lookupNormalRect(dict.getArray("BBox"), null);
+  const matrix = dict.getArray("Matrix");
+  const bbox = Util.normalizeRect(dict.getArray("BBox"));
+  const xstep = dict.get("XStep");
+  const ystep = dict.get("YStep");
+  const paintType = dict.get("PaintType");
+  const tilingType = dict.get("TilingType");
+
   // Ensure that the pattern has a non-zero width and height, to prevent errors
   // in `pattern_helper.js` (fixes issue8330.pdf).
-  if (!bbox || bbox[2] - bbox[0] === 0 || bbox[3] - bbox[1] === 0) {
-    throw new FormatError(`Invalid getTilingPatternIR /BBox array.`);
-  }
-  const xstep = dict.get("XStep");
-  if (typeof xstep !== "number") {
-    throw new FormatError(`Invalid getTilingPatternIR /XStep value.`);
-  }
-  const ystep = dict.get("YStep");
-  if (typeof ystep !== "number") {
-    throw new FormatError(`Invalid getTilingPatternIR /YStep value.`);
-  }
-  const paintType = dict.get("PaintType");
-  if (!Number.isInteger(paintType)) {
-    throw new FormatError(`Invalid getTilingPatternIR /PaintType value.`);
-  }
-  const tilingType = dict.get("TilingType");
-  if (!Number.isInteger(tilingType)) {
-    throw new FormatError(`Invalid getTilingPatternIR /TilingType value.`);
+  if (bbox[2] - bbox[0] === 0 || bbox[3] - bbox[1] === 0) {
+    throw new FormatError(`Invalid getTilingPatternIR /BBox array: [${bbox}].`);
   }
 
   return [
@@ -1028,4 +1005,4 @@ function getTilingPatternIR(operatorList, dict, color) {
   ];
 }
 
-export { clearPatternCaches, getTilingPatternIR, Pattern };
+export { getTilingPatternIR, Pattern };

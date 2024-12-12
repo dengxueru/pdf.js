@@ -1,7 +1,6 @@
 ---
 title: Getting Started
-layout: layout.njk
-slug: getting_started
+template: layout.jade
 ---
 
 # Getting Started
@@ -77,50 +76,51 @@ Note that we only mention the most relevant files and folders.
 
 ### Prebuilt
 
-```plaintext
+```
 ├── build/
-│   ├── pdf.mjs                            - display layer
-│   ├── pdf.mjs.map                        - display layer's source map
-│   ├── pdf.worker.mjs                     - core layer
-│   └── pdf.worker.mjs.map                 - core layer's source map
+│   ├── pdf.js                             - display layer
+│   ├── pdf.js.map                         - display layer's source map
+│   ├── pdf.worker.js                      - core layer
+│   └── pdf.worker.js.map                  - core layer's source map
 ├── web/
 │   ├── cmaps/                             - character maps (required by core)
 │   ├── compressed.tracemonkey-pldi-09.pdf - PDF file for testing purposes
+│   ├── debugger.js                        - helpful debugging features
 │   ├── images/                            - images for the viewer and annotation icons
 │   ├── locale/                            - translation files
 │   ├── viewer.css                         - viewer style sheet
 │   ├── viewer.html                        - viewer layout
-│   ├── viewer.mjs                         - viewer layer
-│   └── viewer.mjs.map                     - viewer layer's source map
+│   ├── viewer.js                          - viewer layer
+│   └── viewer.js.map                      - viewer layer's source map
 └── LICENSE
 ```
 
 ### Source
 
-```plaintext
+```
 ├── docs/                                  - website source code
 ├── examples/                              - simple usage examples
 ├── extensions/                            - browser extension source code
 ├── external/                              - third party code
 ├── l10n/                                  - translation files
 ├── src/
-│   ├── core/                              - core layer
-│   ├── display/                           - display layer
-│   ├── shared/                            - shared code between the core and display layers
-│   ├── interfaces.js                      - interface definitions for the core/display layers
-│   └── pdf.*.js                           - wrapper files for bundling
+│   ├── core/                              - core layer
+│   ├── display/                           - display layer
+│   ├── shared/                            - shared code between the core and display layers
+│   ├── interfaces.js                      - interface definitions for the core/display layers
+│   └── pdf.*.js                           - wrapper files for bundling
 ├── test/                                  - unit, font, reference, and integration tests
 ├── web/                                   - viewer layer
 ├── LICENSE
 ├── README.md
-├── gulpfile.mjs                           - build scripts/logic
+├── gulpfile.js                            - build scripts/logic
 ├── package-lock.json                      - pinned dependency versions
 └── package.json                           - package definition and dependencies
 ```
 
 ## Trying the Viewer
 
-With the prebuilt or source version, open `web/viewer.html` in a browser and the test pdf should load. Note: the worker is not enabled for file:// urls, so use a server. If you're using the source build and have node, you can run `npx gulp server`.
+With the prebuilt or source version, open `web/viewer.html` in a browser and the test pdf should load. Note: the worker is not enabled for file:// urls, so use a server. If you're using the source build and have node, you can run `gulp server`.
 
 ## More Information
 

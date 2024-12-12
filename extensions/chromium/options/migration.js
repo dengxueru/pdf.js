@@ -13,14 +13,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-"use strict";
+/* eslint strict: ["error", "function"] */
 
-chrome.runtime.onInstalled.addListener(({ reason }) => {
-  if (reason !== "update") {
-    // We only need to run migration logic for extension updates, not for new
-    // installs or browser updates.
-    return;
-  }
+(function () {
+  "use strict";
   var storageLocal = chrome.storage.local;
   var storageSync = chrome.storage.sync;
 
@@ -41,12 +37,16 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
     });
   });
 
-  async function getStorageNames(callback) {
+  function getStorageNames(callback) {
+    var x = new XMLHttpRequest();
     var schema_location = chrome.runtime.getManifest().storage.managed_schema;
-    var res = await fetch(chrome.runtime.getURL(schema_location));
-    var storageManifest = await res.json();
-    var storageKeys = Object.keys(storageManifest.properties);
-    callback(storageKeys);
+    x.open("get", chrome.runtime.getURL(schema_location));
+    x.onload = function () {
+      var storageKeys = Object.keys(x.response.properties);
+      callback(storageKeys);
+    };
+    x.responseType = "json";
+    x.send();
   }
 
   // Save |values| to storage.sync and delete the values with that key from
@@ -150,4 +150,4 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
       }
     );
   }
-});
+})();

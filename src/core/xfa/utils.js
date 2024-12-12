@@ -129,10 +129,12 @@ function getRelevant(data) {
   return data
     .trim()
     .split(/\s+/)
-    .map(e => ({
-      excluded: e[0] === "-",
-      viewname: e.substring(1),
-    }));
+    .map(e => {
+      return {
+        excluded: e[0] === "-",
+        viewname: e.substring(1),
+      };
+    });
 }
 
 function getColor(data, def = [0, 0, 0]) {

@@ -50,9 +50,7 @@ async function initializePDFJS(callback) {
       "pdfjs-test/unit/annotation_spec.js",
       "pdfjs-test/unit/annotation_storage_spec.js",
       "pdfjs-test/unit/api_spec.js",
-      "pdfjs-test/unit/app_options_spec.js",
       "pdfjs-test/unit/bidi_spec.js",
-      "pdfjs-test/unit/canvas_factory_spec.js",
       "pdfjs-test/unit/cff_parser_spec.js",
       "pdfjs-test/unit/cmap_spec.js",
       "pdfjs-test/unit/colorspace_spec.js",
@@ -60,6 +58,7 @@ async function initializePDFJS(callback) {
       "pdfjs-test/unit/crypto_spec.js",
       "pdfjs-test/unit/custom_spec.js",
       "pdfjs-test/unit/default_appearance_spec.js",
+      "pdfjs-test/unit/display_svg_spec.js",
       "pdfjs-test/unit/display_utils_spec.js",
       "pdfjs-test/unit/document_spec.js",
       "pdfjs-test/unit/editor_spec.js",
@@ -87,7 +86,6 @@ async function initializePDFJS(callback) {
       "pdfjs-test/unit/scripting_spec.js",
       "pdfjs-test/unit/stream_spec.js",
       "pdfjs-test/unit/struct_tree_spec.js",
-      "pdfjs-test/unit/svg_factory_spec.js",
       "pdfjs-test/unit/text_layer_spec.js",
       "pdfjs-test/unit/type1_parser_spec.js",
       "pdfjs-test/unit/ui_utils_spec.js",
@@ -111,7 +109,7 @@ async function initializePDFJS(callback) {
     );
   }
   // Configure the worker.
-  GlobalWorkerOptions.workerSrc = "../../build/generic/build/pdf.worker.mjs";
+  GlobalWorkerOptions.workerSrc = "../../build/generic/build/pdf.worker.js";
 
   callback();
 }

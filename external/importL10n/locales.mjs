@@ -14,6 +14,7 @@
  */
 
 import fs from "fs";
+import https from "https";
 import path from "path";
 
 // Fetches all languages that have an *active* translation in mozilla-central.
@@ -21,64 +22,90 @@ import path from "path";
 
 const DEFAULT_LOCALE = "en-US";
 
-const EXCLUDE_LANG_CODES = new Set(["ca-valencia", "ja-JP-mac"]);
+const EXCLUDE_LANG_CODES = ["ca-valencia", "ja-JP-mac"];
 
 function normalizeText(s) {
   return s.replaceAll(/\r\n?/g, "\n").replaceAll("\uFEFF", "");
 }
 
-async function downloadLanguageCodes() {
+function downloadLanguageCodes() {
   console.log("Downloading language codes...\n");
 
   const ALL_LOCALES =
-    "https://raw.githubusercontent.com/mozilla/gecko-dev/master/browser/locales/all-locales";
+    "https://hg.mozilla.org/mozilla-central/raw-file/tip/browser/locales/all-locales";
 
-  const response = await fetch(ALL_LOCALES);
-  if (!response.ok) {
-    throw new Error(response.statusText);
-  }
-  const content = await response.text();
-
-  // Remove any leading/trailing white-space.
-  const langCodes = normalizeText(content.trim()).split("\n");
-  // Remove all locales that we don't want to download below.
-  return langCodes.filter(
-    langCode => langCode !== DEFAULT_LOCALE && !EXCLUDE_LANG_CODES.has(langCode)
-  );
+  return new Promise(function (resolve) {
+    https.get(ALL_LOCALES, function (response) {
+      if (response.statusCode === 200) {
+        let content = "";
+        response.setEncoding("utf8");
+        response.on("data", function (chunk) {
+          content += chunk;
+        });
+        response.on("end", function () {
+          content = content.trim(); // Remove any leading/trailing white-space.
+          const langCodes = normalizeText(content).split("\n");
+          // Remove all locales that we don't want to download below.
+          for (const langCode of [DEFAULT_LOCALE, ...EXCLUDE_LANG_CODES]) {
+            const i = langCodes.indexOf(langCode);
+            if (i > -1) {
+              langCodes.splice(i, 1);
+            }
+          }
+          resolve(langCodes);
+        });
+      } else {
+        resolve([]);
+      }
+    });
+  });
 }
 
-async function downloadLanguageFiles(root, langCode) {
-  console.log(`Downloading ${langCode}...`);
+function downloadLanguageFiles(root, langCode) {
+  console.log("Downloading " + langCode + "...");
 
   // Constants for constructing the URLs. Translations are taken from the
   // Nightly channel as those are the most recent ones.
-  const MOZ_CENTRAL_ROOT =
-    "https://raw.githubusercontent.com/mozilla-l10n/firefox-l10n/main/";
-  const MOZ_CENTRAL_PDFJS_DIR = "/toolkit/toolkit/pdfviewer/";
+  const MOZ_CENTRAL_ROOT = "https://hg.mozilla.org/l10n-central/";
+  const MOZ_CENTRAL_PDFJS_DIR = "/raw-file/default/browser/pdfviewer/";
 
   // Defines which files to download for each language.
-  const files = ["viewer.ftl"];
+  const files = ["viewer.properties"];
+  let downloadsLeft = files.length;
 
   const outputDir = path.join(root, langCode);
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir);
   }
 
-  // Download the necessary files for this language.
-  for (const fileName of files) {
-    const outputPath = path.join(outputDir, fileName);
-    const url = MOZ_CENTRAL_ROOT + langCode + MOZ_CENTRAL_PDFJS_DIR + fileName;
+  return new Promise(function (resolve) {
+    // Download the necessary files for this language.
+    files.forEach(function (fileName) {
+      const outputPath = path.join(outputDir, fileName);
+      const url =
+        MOZ_CENTRAL_ROOT + langCode + MOZ_CENTRAL_PDFJS_DIR + fileName;
 
-    const response = await fetch(url);
-    if (!response.ok) {
-      // Not all files exist for each language. Files without translations
-      // have been removed (https://bugzilla.mozilla.org/show_bug.cgi?id=1443175).
-      continue;
-    }
-    const content = await response.text();
-
-    fs.writeFileSync(outputPath, normalizeText(content), "utf8");
-  }
+      https.get(url, function (response) {
+        // Not all files exist for each language. Files without translations
+        // have been removed (https://bugzilla.mozilla.org/show_bug.cgi?id=1443175).
+        if (response.statusCode === 200) {
+          let content = "";
+          response.setEncoding("utf8");
+          response.on("data", function (chunk) {
+            content += chunk;
+          });
+          response.on("end", function () {
+            fs.writeFileSync(outputPath, normalizeText(content), "utf8");
+            if (--downloadsLeft === 0) {
+              resolve();
+            }
+          });
+        } else if (--downloadsLeft === 0) {
+          resolve();
+        }
+      });
+    });
+  });
 }
 
 async function downloadL10n(root) {

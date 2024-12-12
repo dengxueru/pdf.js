@@ -90,7 +90,6 @@ import {
   XFAObject,
   XFAObjectArray,
 } from "./xfa_object.js";
-import { fromBase64Util, Util, warn } from "../../shared/util.js";
 import {
   getBBox,
   getColor,
@@ -103,6 +102,7 @@ import {
   getStringOption,
   HTMLResult,
 } from "./utils.js";
+import { stringToBytes, Util, warn } from "../../shared/util.js";
 import { getMetrics } from "./fonts.js";
 import { recoverJsURL } from "../core_utils.js";
 import { searchNode } from "./som.js";
@@ -3427,7 +3427,7 @@ class Image extends StringObject {
     }
 
     if (!buffer && this.transferEncoding === "base64") {
-      buffer = fromBase64Util(this[$content]);
+      buffer = stringToBytes(atob(this[$content]));
     }
 
     if (!buffer) {
@@ -4317,7 +4317,7 @@ class Para extends XFAObject {
       style.paddingLeft = measureToString(this.marginLeft);
     }
     if (this.marginRight !== "") {
-      style.paddingRight = measureToString(this.marginRight);
+      style.paddingight = measureToString(this.marginRight);
     }
     if (this.spaceAbove !== "") {
       style.paddingTop = measureToString(this.spaceAbove);

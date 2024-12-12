@@ -42,35 +42,8 @@ limitations under the License.
     return;
   }
 
-  // The localStorage API is unavailable in service workers. We store data in
-  // chrome.storage.local and use this "localStorage" object to enable
-  // synchronous access in the logic.
-  const localStorage = {
-    telemetryLastTime: 0,
-    telemetryDeduplicationId: "",
-    telemetryLastVersion: "",
-  };
-
-  chrome.alarms.onAlarm.addListener(alarm => {
-    if (alarm.name === "maybeSendPing") {
-      maybeSendPing();
-    }
-  });
-  chrome.storage.session.get({ didPingCheck: false }, async items => {
-    if (items?.didPingCheck) {
-      return;
-    }
-    maybeSendPing();
-    await chrome.alarms.clear("maybeSendPing");
-    await chrome.alarms.create("maybeSendPing", { periodInMinutes: 60 });
-    chrome.storage.session.set({ didPingCheck: true });
-  });
-
-  function updateLocalStorage(key, value) {
-    localStorage[key] = value;
-    // Note: We mirror the data in localStorage because the following is async.
-    chrome.storage.local.set({ [key]: value });
-  }
+  maybeSendPing();
+  setInterval(maybeSendPing, 36e5);
 
   function maybeSendPing() {
     getLoggingPref(function (didOptOut) {
@@ -88,20 +61,12 @@ limitations under the License.
         // send more pings.
         return;
       }
-      doSendPing();
-    });
-  }
-
-  function doSendPing() {
-    chrome.storage.local.get(localStorage, items => {
-      Object.assign(localStorage, items);
-
       var lastTime = parseInt(localStorage.telemetryLastTime) || 0;
       var wasUpdated = didUpdateSinceLastCheck();
       if (!wasUpdated && Date.now() - lastTime < MINIMUM_TIME_BETWEEN_PING) {
         return;
       }
-      updateLocalStorage("telemetryLastTime", Date.now());
+      localStorage.telemetryLastTime = Date.now();
 
       var deduplication_id = getDeduplicationId(wasUpdated);
       var extension_version = chrome.runtime.getManifest().version;
@@ -139,7 +104,7 @@ limitations under the License.
       for (const c of buf) {
         id += (c >>> 4).toString(16) + (c & 0xf).toString(16);
       }
-      updateLocalStorage("telemetryDeduplicationId", id);
+      localStorage.telemetryDeduplicationId = id;
     }
     return id;
   }
@@ -154,7 +119,7 @@ limitations under the License.
     if (!chromeVersion || localStorage.telemetryLastVersion === chromeVersion) {
       return false;
     }
-    updateLocalStorage("telemetryLastVersion", chromeVersion);
+    localStorage.telemetryLastVersion = chromeVersion;
     return true;
   }
 

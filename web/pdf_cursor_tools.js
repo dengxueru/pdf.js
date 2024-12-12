@@ -13,8 +13,6 @@
  * limitations under the License.
  */
 
-/** @typedef {import("./event_utils.js").EventBus} EventBus */
-
 import { AnnotationEditorType, shadow } from "pdfjs-lib";
 import { CursorTool, PresentationModeState } from "./ui_utils.js";
 import { GrabToPan } from "./grab_to_pan.js";
@@ -65,19 +63,7 @@ class PDFCursorTools {
       // Cursor tools cannot be used in PresentationMode/AnnotationEditor.
       return;
     }
-    this.#switchTool(tool);
-  }
-
-  #switchTool(tool, disabled = false) {
     if (tool === this.#active) {
-      if (this.#prevActive !== null) {
-        // Ensure that the `disabled`-attribute of the buttons will be updated.
-        this.eventBus.dispatch("cursortoolchanged", {
-          source: this,
-          tool,
-          disabled,
-        });
-      }
       return; // The requested tool is already active.
     }
 
@@ -115,39 +101,44 @@ class PDFCursorTools {
     this.eventBus.dispatch("cursortoolchanged", {
       source: this,
       tool,
-      disabled,
     });
   }
 
   #addEventListeners() {
     this.eventBus._on("switchcursortool", evt => {
-      if (!evt.reset) {
-        this.switchTool(evt.tool);
-      } else if (this.#prevActive !== null) {
-        annotationEditorMode = AnnotationEditorType.NONE;
-        presentationModeState = PresentationModeState.NORMAL;
-
-        enableActive();
-      }
+      this.switchTool(evt.tool);
     });
 
     let annotationEditorMode = AnnotationEditorType.NONE,
       presentationModeState = PresentationModeState.NORMAL;
 
     const disableActive = () => {
-      this.#prevActive ??= this.#active; // Keep track of the first one.
-      this.#switchTool(CursorTool.SELECT, /* disabled = */ true);
+      const prevActive = this.#active;
+
+      this.switchTool(CursorTool.SELECT);
+      this.#prevActive ??= prevActive; // Keep track of the first one.
     };
     const enableActive = () => {
+      const prevActive = this.#prevActive;
+
       if (
-        this.#prevActive !== null &&
+        prevActive !== null &&
         annotationEditorMode === AnnotationEditorType.NONE &&
         presentationModeState === PresentationModeState.NORMAL
       ) {
-        this.#switchTool(this.#prevActive);
         this.#prevActive = null;
+        this.switchTool(prevActive);
       }
     };
+
+    this.eventBus._on("secondarytoolbarreset", evt => {
+      if (this.#prevActive !== null) {
+        annotationEditorMode = AnnotationEditorType.NONE;
+        presentationModeState = PresentationModeState.NORMAL;
+
+        enableActive();
+      }
+    });
 
     this.eventBus._on("annotationeditormodechanged", ({ mode }) => {
       annotationEditorMode = mode;

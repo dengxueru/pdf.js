@@ -27,8 +27,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      undefined,
-      "TrueType"
+      undefined
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -41,31 +40,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(/^"Foo",g_d(\d+)_sf(\d+)$/);
-  });
-
-  it("should substitute an unknown font subset", () => {
-    const fontName = "ABCDEF+Foo";
-    const fontSubstitution = getFontSubstitution(
-      new Map(),
-      idFactory,
-      localFontPath,
-      fontName,
-      undefined,
-      "TrueType"
-    );
-    expect(fontSubstitution).toEqual(
-      jasmine.objectContaining({
-        guessFallback: true,
-        baseFontName: "Foo",
-        src: "local(Foo)",
-        style: {
-          style: "normal",
-          weight: "normal",
-        },
-      })
-    );
-    expect(fontSubstitution.css).toMatch(/^"Foo",g_d(\d+)_sf(\d+)$/);
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+)$/);
   });
 
   it("should substitute an unknown bold font", () => {
@@ -75,8 +50,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      undefined,
-      "TrueType"
+      undefined
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -89,7 +63,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(/^"Foo",g_d(\d+)_sf(\d+)$/);
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+)$/);
   });
 
   it("should substitute an unknown italic font", () => {
@@ -99,8 +73,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      undefined,
-      "TrueType"
+      undefined
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -113,7 +86,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(/^"Foo",g_d(\d+)_sf(\d+)$/);
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+)$/);
   });
 
   it("should substitute an unknown bold italic font", () => {
@@ -123,8 +96,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      undefined,
-      "TrueType"
+      undefined
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -137,7 +109,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(/^"Foo",g_d(\d+)_sf(\d+)$/);
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+)$/);
   });
 
   it("should substitute an unknown font but with a standard font", () => {
@@ -147,8 +119,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      "Helvetica",
-      "TrueType"
+      "Helvetica"
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -169,7 +140,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(/^"Foo",g_d(\d+)_sf(\d+),sans-serif$/);
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+),sans-serif$/);
   });
 
   it("should substitute an unknown font but with a standard italic font", () => {
@@ -179,8 +150,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      "Helvetica-Oblique",
-      "TrueType"
+      "Helvetica-Oblique"
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -203,7 +173,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(/^"Foo",g_d(\d+)_sf(\d+),sans-serif$/);
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+),sans-serif$/);
   });
 
   it("should substitute an unknown font but with a standard bold font", () => {
@@ -213,8 +183,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      "Helvetica-Bold",
-      "TrueType"
+      "Helvetica-Bold"
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -236,7 +205,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(/^"Foo",g_d(\d+)_sf(\d+),sans-serif$/);
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+),sans-serif$/);
   });
 
   it("should substitute an unknown font but with a standard bold italic font", () => {
@@ -246,8 +215,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      "Helvetica-BoldOblique",
-      "TrueType"
+      "Helvetica-BoldOblique"
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -272,7 +240,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(/^"Foo",g_d(\d+)_sf(\d+),sans-serif$/);
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+),sans-serif$/);
   });
 
   it("should substitute Calibri", () => {
@@ -282,8 +250,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      undefined,
-      "TrueType"
+      undefined
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -304,9 +271,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(
-      /^"Calibri",g_d(\d+)_sf(\d+),sans-serif$/
-    );
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+),sans-serif$/);
   });
 
   it("should substitute Calibri-Bold", () => {
@@ -316,8 +281,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      undefined,
-      "TrueType"
+      undefined
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -340,9 +304,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(
-      /^"Calibri",g_d(\d+)_sf(\d+),sans-serif$/
-    );
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+),sans-serif$/);
   });
 
   it("should substitute Arial Black", () => {
@@ -352,8 +314,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      undefined,
-      "TrueType"
+      undefined
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -376,9 +337,7 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(
-      /^"ArialBlack",g_d(\d+)_sf(\d+),sans-serif$/
-    );
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+),sans-serif$/);
   });
 
   it("should substitute Arial Black Bold", () => {
@@ -388,8 +347,7 @@ describe("getFontSubstitution", function () {
       idFactory,
       localFontPath,
       fontName,
-      undefined,
-      "TrueType"
+      undefined
     );
     expect(fontSubstitution).toEqual(
       jasmine.objectContaining({
@@ -412,8 +370,6 @@ describe("getFontSubstitution", function () {
         },
       })
     );
-    expect(fontSubstitution.css).toMatch(
-      /^"ArialBlack",g_d(\d+)_sf(\d+),sans-serif$/
-    );
+    expect(fontSubstitution.css).toMatch(/^g_d(\d+)_sf(\d+),sans-serif$/);
   });
 });

@@ -16,6 +16,7 @@
 import {
   createValidAbsoluteUrl,
   FeatureTest,
+  shadow,
   unreachable,
   warn,
 } from "../shared/util.js";
@@ -37,10 +38,7 @@ function parseDocBaseUrl(url) {
 
 class BasePdfManager {
   constructor(args) {
-    if (
-      (typeof PDFJSDev === "undefined" || PDFJSDev.test("TESTING")) &&
-      this.constructor === BasePdfManager
-    ) {
+    if (this.constructor === BasePdfManager) {
       unreachable("Cannot initialize BasePdfManager.");
     }
     this._docBaseUrl = parseDocBaseUrl(args.docBaseUrl);
@@ -48,13 +46,11 @@ class BasePdfManager {
     this._password = args.password;
     this.enableXfa = args.enableXfa;
 
-    // Check `OffscreenCanvas` and `ImageDecoder` support once,
-    // rather than repeatedly throughout the worker-thread code.
+    // Check `OffscreenCanvas` support once, rather than repeatedly throughout
+    // the worker-thread code.
     args.evaluatorOptions.isOffscreenCanvasSupported &&=
       FeatureTest.isOffscreenCanvasSupported;
-    args.evaluatorOptions.isImageDecoderSupported &&=
-      FeatureTest.isImageDecoderSupported;
-    this.evaluatorOptions = Object.freeze(args.evaluatorOptions);
+    this.evaluatorOptions = args.evaluatorOptions;
   }
 
   get docId() {
@@ -66,11 +62,8 @@ class BasePdfManager {
   }
 
   get docBaseUrl() {
-    return this._docBaseUrl;
-  }
-
-  get catalog() {
-    return this.pdfDocument.catalog;
+    const catalog = this.pdfDocument.catalog;
+    return shadow(this, "docBaseUrl", catalog.baseUrl || this._docBaseUrl);
   }
 
   ensureDoc(prop, args) {

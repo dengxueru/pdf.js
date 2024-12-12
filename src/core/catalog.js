@@ -15,7 +15,6 @@
 
 import {
   collectActions,
-  isNumberArray,
   MissingDataException,
   PDF_VERSION_REGEXP,
   recoverJsURL,
@@ -53,73 +52,11 @@ import { GlobalImageCache } from "./image_utils.js";
 import { MetadataParser } from "./metadata_parser.js";
 import { StructTreeRoot } from "./struct_tree.js";
 
-function isValidExplicitDest(dest) {
-  if (!Array.isArray(dest) || dest.length < 2) {
-    return false;
-  }
-  const [page, zoom, ...args] = dest;
-  if (!(page instanceof Ref) && !Number.isInteger(page)) {
-    return false;
-  }
-  if (!(zoom instanceof Name)) {
-    return false;
-  }
-  const argsLen = args.length;
-  let allowNull = true;
-  switch (zoom.name) {
-    case "XYZ":
-      if (argsLen < 2 || argsLen > 3) {
-        return false;
-      }
-      break;
-    case "Fit":
-    case "FitB":
-      return argsLen === 0;
-    case "FitH":
-    case "FitBH":
-    case "FitV":
-    case "FitBV":
-      if (argsLen > 1) {
-        return false;
-      }
-      break;
-    case "FitR":
-      if (argsLen !== 4) {
-        return false;
-      }
-      allowNull = false;
-      break;
-    default:
-      return false;
-  }
-  for (const arg of args) {
-    if (!(typeof arg === "number" || (allowNull && arg === null))) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function fetchDest(dest) {
+function fetchDestination(dest) {
   if (dest instanceof Dict) {
     dest = dest.get("D");
   }
-  return isValidExplicitDest(dest) ? dest : null;
-}
-
-function fetchRemoteDest(action) {
-  let dest = action.get("D");
-  if (dest) {
-    if (dest instanceof Name) {
-      dest = dest.name;
-    }
-    if (typeof dest === "string") {
-      return stringToPDFString(dest);
-    } else if (isValidExplicitDest(dest)) {
-      return JSON.stringify(dest);
-    }
-  }
-  return null;
+  return Array.isArray(dest) ? dest : null;
 }
 
 class Catalog {
@@ -143,13 +80,8 @@ class Catalog {
     this.globalImageCache = new GlobalImageCache();
     this.pageKidsCountCache = new RefSetCache();
     this.pageIndexCache = new RefSetCache();
-    this.pageDictCache = new RefSetCache();
     this.nonBlendModesSet = new RefSet();
     this.systemFontCache = new Map();
-  }
-
-  cloneDict() {
-    return this._catDict.clone();
   }
 
   get version() {
@@ -168,7 +100,7 @@ class Catalog {
     return shadow(
       this,
       "lang",
-      lang && typeof lang === "string" ? stringToPDFString(lang) : null
+      typeof lang === "string" ? stringToPDFString(lang) : null
     );
   }
 
@@ -313,13 +245,11 @@ class Catalog {
    * @private
    */
   _readStructTreeRoot() {
-    const rawObj = this._catDict.getRaw("StructTreeRoot");
-    const obj = this.xref.fetchIfRef(rawObj);
+    const obj = this._catDict.get("StructTreeRoot");
     if (!(obj instanceof Dict)) {
       return null;
     }
-
-    const root = new StructTreeRoot(obj, rawObj);
+    const root = new StructTreeRoot(obj);
     root.init();
     return root;
   }
@@ -373,14 +303,14 @@ class Catalog {
         continue;
       }
       if (!outlineDict.has("Title")) {
-        warn("Invalid outline item encountered.");
+        throw new FormatError("Invalid outline item encountered.");
       }
 
       const data = { url: null, dest: null, action: null };
       Catalog.parseDestDictionary({
         destDict: outlineDict,
         resultObj: data,
-        docBaseUrl: this.baseUrl,
+        docBaseUrl: this.pdfManager.docBaseUrl,
         docAttachments: this.attachments,
       });
       const title = outlineDict.get("Title");
@@ -391,7 +321,8 @@ class Catalog {
 
       // We only need to parse the color when it's valid, and non-default.
       if (
-        isNumberArray(color, 3) &&
+        Array.isArray(color) &&
+        color.length === 3 &&
         (color[0] !== 0 || color[1] !== 0 || color[2] !== 0)
       ) {
         rgbColor = ColorSpace.singletons.rgb.getRgb(color, 0);
@@ -405,7 +336,7 @@ class Catalog {
         unsafeUrl: data.unsafeUrl,
         newWindow: data.newWindow,
         setOCGState: data.setOCGState,
-        title: typeof title === "string" ? stringToPDFString(title) : "",
+        title: stringToPDFString(title),
         color: rgbColor,
         count: Number.isInteger(count) ? count : undefined,
         bold: !!(flags & 2),
@@ -485,15 +416,29 @@ class Catalog {
       if (!Array.isArray(groupsData)) {
         return shadow(this, "optionalContentConfig", null);
       }
-      const groupRefCache = new RefSetCache();
+      const groups = [];
+      const groupRefs = [];
       // Ensure all the optional content groups are valid.
       for (const groupRef of groupsData) {
-        if (!(groupRef instanceof Ref) || groupRefCache.has(groupRef)) {
+        if (!(groupRef instanceof Ref)) {
           continue;
         }
-        groupRefCache.put(groupRef, this.#readOptionalContentGroup(groupRef));
+        groupRefs.push(groupRef);
+        const group = this.xref.fetchIfRef(groupRef);
+        groups.push({
+          id: groupRef.toString(),
+          name:
+            typeof group.get("Name") === "string"
+              ? stringToPDFString(group.get("Name"))
+              : null,
+          intent:
+            typeof group.get("Intent") === "string"
+              ? stringToPDFString(group.get("Intent"))
+              : null,
+        });
       }
-      config = this.#readOptionalContentConfig(defaultConfig, groupRefCache);
+      config = this._readOptionalContentConfig(defaultConfig, groupRefs);
+      config.groups = groups;
     } catch (ex) {
       if (ex instanceof MissingDataException) {
         throw ex;
@@ -503,66 +448,7 @@ class Catalog {
     return shadow(this, "optionalContentConfig", config);
   }
 
-  #readOptionalContentGroup(groupRef) {
-    const group = this.xref.fetch(groupRef);
-    const obj = {
-      id: groupRef.toString(),
-      name: null,
-      intent: null,
-      usage: {
-        print: null,
-        view: null,
-      },
-      rbGroups: [],
-    };
-
-    const name = group.get("Name");
-    if (typeof name === "string") {
-      obj.name = stringToPDFString(name);
-    }
-
-    let intent = group.getArray("Intent");
-    if (!Array.isArray(intent)) {
-      intent = [intent];
-    }
-    if (intent.every(i => i instanceof Name)) {
-      obj.intent = intent.map(i => i.name);
-    }
-
-    const usage = group.get("Usage");
-    if (!(usage instanceof Dict)) {
-      return obj;
-    }
-    const usageObj = obj.usage;
-
-    const print = usage.get("Print");
-    if (print instanceof Dict) {
-      const printState = print.get("PrintState");
-      if (printState instanceof Name) {
-        switch (printState.name) {
-          case "ON":
-          case "OFF":
-            usageObj.print = { printState: printState.name };
-        }
-      }
-    }
-
-    const view = usage.get("View");
-    if (view instanceof Dict) {
-      const viewState = view.get("ViewState");
-      if (viewState instanceof Name) {
-        switch (viewState.name) {
-          case "ON":
-          case "OFF":
-            usageObj.view = { viewState: viewState.name };
-        }
-      }
-    }
-
-    return obj;
-  }
-
-  #readOptionalContentConfig(config, groupRefCache) {
+  _readOptionalContentConfig(config, contentGroupRefs) {
     function parseOnOff(refs) {
       const onParsed = [];
       if (Array.isArray(refs)) {
@@ -570,7 +456,7 @@ class Catalog {
           if (!(value instanceof Ref)) {
             continue;
           }
-          if (groupRefCache.has(value)) {
+          if (contentGroupRefs.includes(value)) {
             onParsed.push(value.toString());
           }
         }
@@ -585,7 +471,7 @@ class Catalog {
       const order = [];
 
       for (const value of refs) {
-        if (value instanceof Ref && groupRefCache.has(value)) {
+        if (value instanceof Ref && contentGroupRefs.includes(value)) {
           parsedOrderRefs.put(value); // Handle "hidden" groups, see below.
 
           order.push(value.toString());
@@ -602,7 +488,7 @@ class Catalog {
         return order;
       }
       const hiddenGroups = [];
-      for (const [groupRef] of groupRefCache.items()) {
+      for (const groupRef of contentGroupRefs) {
         if (parsedOrderRefs.has(groupRef)) {
           continue;
         }
@@ -635,37 +521,9 @@ class Catalog {
       return { name: stringToPDFString(nestedName), order: nestedOrder };
     }
 
-    function parseRBGroups(rbGroups) {
-      if (!Array.isArray(rbGroups)) {
-        return;
-      }
-
-      for (const value of rbGroups) {
-        const rbGroup = xref.fetchIfRef(value);
-        if (!Array.isArray(rbGroup) || !rbGroup.length) {
-          continue;
-        }
-        const parsedRbGroup = new Set();
-
-        for (const ref of rbGroup) {
-          if (
-            ref instanceof Ref &&
-            groupRefCache.has(ref) &&
-            !parsedRbGroup.has(ref.toString())
-          ) {
-            parsedRbGroup.add(ref.toString());
-            // Keep a record of which RB groups the current OCG belongs to.
-            groupRefCache.get(ref).rbGroups.push(parsedRbGroup);
-          }
-        }
-      }
-    }
-
     const xref = this.xref,
       parsedOrderRefs = new RefSet(),
       MAX_NESTED_LEVELS = 10;
-
-    parseRBGroups(config.get("RBGroups"));
 
     return {
       name:
@@ -683,7 +541,7 @@ class Catalog {
       on: parseOnOff(config.get("ON")),
       off: parseOnOff(config.get("OFF")),
       order: parseOrder(config.get("Order")),
-      groups: [...groupRefCache],
+      groups: null,
     };
   }
 
@@ -714,18 +572,18 @@ class Catalog {
       dests = Object.create(null);
     if (obj instanceof NameTree) {
       for (const [key, value] of obj.getAll()) {
-        const dest = fetchDest(value);
+        const dest = fetchDestination(value);
         if (dest) {
           dests[stringToPDFString(key)] = dest;
         }
       }
     } else if (obj instanceof Dict) {
-      for (const [key, value] of obj) {
-        const dest = fetchDest(value);
+      obj.forEach(function (key, value) {
+        const dest = fetchDestination(value);
         if (dest) {
           dests[key] = dest;
         }
-      }
+      });
     }
     return shadow(this, "destinations", dests);
   }
@@ -733,7 +591,7 @@ class Catalog {
   getDestination(id) {
     const obj = this._readDests();
     if (obj instanceof NameTree) {
-      const dest = fetchDest(obj.get(id));
+      const dest = fetchDestination(obj.get(id));
       if (dest) {
         return dest;
       }
@@ -745,7 +603,7 @@ class Catalog {
         return allDest;
       }
     } else if (obj instanceof Dict) {
-      const dest = fetchDest(obj.get(id));
+      const dest = fetchDestination(obj.get(id));
       if (dest) {
         return dest;
       }
@@ -1014,13 +872,14 @@ class Catalog {
         case "PrintPageRange":
           // The number of elements must be even.
           if (Array.isArray(value) && value.length % 2 === 0) {
-            const isValid = value.every(
-              (page, i, arr) =>
+            const isValid = value.every((page, i, arr) => {
+              return (
                 Number.isInteger(page) &&
                 page > 0 &&
                 (i === 0 || page >= arr[i - 1]) &&
                 page <= this.numPages
-            );
+              );
+            });
             if (isValid) {
               prefValue = value;
             }
@@ -1187,7 +1046,6 @@ class Catalog {
     this.globalImageCache.clear(/* onlyData = */ manuallyTriggered);
     this.pageKidsCountCache.clear();
     this.pageIndexCache.clear();
-    this.pageDictCache.clear();
     this.nonBlendModesSet.clear();
 
     const translatedFonts = await Promise.all(this.fontCache);
@@ -1211,8 +1069,7 @@ class Catalog {
     }
     const xref = this.xref,
       pageKidsCountCache = this.pageKidsCountCache,
-      pageIndexCache = this.pageIndexCache,
-      pageDictCache = this.pageDictCache;
+      pageIndexCache = this.pageIndexCache;
     let currentPageIndex = 0;
 
     while (nodesToVisit.length) {
@@ -1231,8 +1088,7 @@ class Catalog {
         }
         visitedNodes.put(currentNode);
 
-        const obj = await (pageDictCache.get(currentNode) ||
-          xref.fetchAsync(currentNode));
+        const obj = await xref.fetchAsync(currentNode);
         if (obj instanceof Dict) {
           let type = obj.getRaw("Type");
           if (type instanceof Ref) {
@@ -1314,18 +1170,7 @@ class Catalog {
       // node further down in the tree (see issue5644.pdf, issue8088.pdf),
       // and to ensure that we actually find the correct `Page` dict.
       for (let last = kids.length - 1; last >= 0; last--) {
-        const lastKid = kids[last];
-        nodesToVisit.push(lastKid);
-
-        // Launch all requests in parallel so we don't wait for each one in turn
-        // when looking for a page near the end, if all the pages are top level.
-        if (
-          currentNode === this.toplevelPagesDict &&
-          lastKid instanceof Ref &&
-          !pageDictCache.has(lastKid)
-        ) {
-          pageDictCache.put(lastKid, xref.fetchAsync(lastKid));
-        }
+        nodesToVisit.push(kids[last]);
       }
     }
 
@@ -1560,7 +1405,7 @@ class Catalog {
         }
       }
     }
-    return shadow(this, "baseUrl", this.pdfManager.docBaseUrl);
+    return shadow(this, "baseUrl", null);
   }
 
   /**
@@ -1578,16 +1423,19 @@ class Catalog {
    * Helper function used to parse the contents of destination dictionaries.
    * @param {ParseDestDictionaryParameters} params
    */
-  static parseDestDictionary({
-    destDict,
-    resultObj,
-    docBaseUrl = null,
-    docAttachments = null,
-  }) {
+  static parseDestDictionary(params) {
+    const destDict = params.destDict;
     if (!(destDict instanceof Dict)) {
       warn("parseDestDictionary: `destDict` must be a dictionary.");
       return;
     }
+    const resultObj = params.resultObj;
+    if (typeof resultObj !== "object") {
+      warn("parseDestDictionary: `resultObj` must be an object.");
+      return;
+    }
+    const docBaseUrl = params.docBaseUrl || null;
+    const docAttachments = params.docAttachments || null;
 
     let action = destDict.get("A"),
       url,
@@ -1655,21 +1503,27 @@ class Catalog {
         case "GoToR":
           const urlDict = action.get("F");
           if (urlDict instanceof Dict) {
-            const fs = new FileSpec(
-              urlDict,
-              /* xref = */ null,
-              /* skipContent = */ true
-            );
-            const { rawFilename } = fs.serializable;
-            url = rawFilename;
+            // We assume that we found a FileSpec dictionary
+            // and fetch the URL without checking any further.
+            url = urlDict.get("F") || null;
           } else if (typeof urlDict === "string") {
             url = urlDict;
           }
 
           // NOTE: the destination is relative to the *remote* document.
-          const remoteDest = fetchRemoteDest(action);
-          if (remoteDest && typeof url === "string") {
-            url = /* baseUrl = */ url.split("#", 1)[0] + "#" + remoteDest;
+          let remoteDest = action.get("D");
+          if (remoteDest) {
+            if (remoteDest instanceof Name) {
+              remoteDest = remoteDest.name;
+            }
+            if (typeof url === "string") {
+              const baseUrl = url.split("#")[0];
+              if (typeof remoteDest === "string") {
+                url = baseUrl + "#" + remoteDest;
+              } else if (Array.isArray(remoteDest)) {
+                url = baseUrl + "#" + JSON.stringify(remoteDest);
+              }
+            }
           }
           // The 'NewWindow' property, equal to `LinkTarget.BLANK`.
           const newWindow = action.get("NewWindow");
@@ -1693,12 +1547,6 @@ class Catalog {
 
           if (attachment) {
             resultObj.attachment = attachment;
-
-            // NOTE: the destination is relative to the *attachment*.
-            const attachmentDest = fetchRemoteDest(action);
-            if (attachmentDest) {
-              resultObj.attachmentDest = attachmentDest;
-            }
           } else {
             warn(`parseDestDictionary - unimplemented "GoToE" action.`);
           }
@@ -1790,7 +1638,7 @@ class Catalog {
       }
       if (typeof dest === "string") {
         resultObj.dest = stringToPDFString(dest);
-      } else if (isValidExplicitDest(dest)) {
+      } else if (Array.isArray(dest)) {
         resultObj.dest = dest;
       }
     }

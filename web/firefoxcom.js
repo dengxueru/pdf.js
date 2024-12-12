@@ -13,12 +13,12 @@
  * limitations under the License.
  */
 
-import { isPdfFile, PDFDataRangeTransport } from "pdfjs-lib";
-import { AppOptions } from "./app_options.js";
-import { BaseExternalServices } from "./external_services.js";
+import "../extensions/firefox/tools/l10n.js";
+import { DefaultExternalServices, PDFViewerApplication } from "./app.js";
+import { isPdfFile, PDFDataRangeTransport, shadow } from "pdfjs-lib";
 import { BasePreferences } from "./preferences.js";
 import { DEFAULT_SCALE_VALUE } from "./ui_utils.js";
-import { L10n } from "./l10n.js";
+import { getL10nFallback } from "./l10n_utils.js";
 
 if (typeof PDFJSDev === "undefined" || !PDFJSDev.test("MOZCENTRAL")) {
   throw new Error(
@@ -26,12 +26,36 @@ if (typeof PDFJSDev === "undefined" || !PDFJSDev.test("MOZCENTRAL")) {
   );
 }
 
-let viewerApp = { initialized: false };
-function initCom(app) {
-  viewerApp = app;
-}
-
 class FirefoxCom {
+  /**
+   * Creates an event that the extension is listening for and will
+   * synchronously respond to.
+   * NOTE: It is recommended to use requestAsync() instead since one day we may
+   *       not be able to synchronously reply.
+   * @param {string} action - The action to trigger.
+   * @param {Object|string} [data] - The data to send.
+   * @returns {*} The response.
+   */
+  static requestSync(action, data) {
+    const request = document.createTextNode("");
+    document.documentElement.append(request);
+
+    const sender = new CustomEvent("pdf.js.message", {
+      bubbles: true,
+      cancelable: false,
+      detail: {
+        action,
+        data,
+        sync: true,
+      },
+    });
+    request.dispatchEvent(sender);
+    const response = sender.detail.response;
+    request.remove();
+
+    return response;
+  }
+
   /**
    * Creates an event that the extension is listening for and will
    * asynchronously respond to.
@@ -73,6 +97,7 @@ class FirefoxCom {
       detail: {
         action,
         data,
+        sync: false,
         responseExpected: !!callback,
       },
     });
@@ -82,6 +107,14 @@ class FirefoxCom {
 
 class DownloadManager {
   #openBlobUrls = new WeakMap();
+
+  downloadUrl(url, filename, options = {}) {
+    FirefoxCom.request("download", {
+      originalUrl: url,
+      filename,
+      options,
+    });
+  }
 
   downloadData(data, filename, contentType) {
     const blobUrl = URL.createObjectURL(
@@ -99,33 +132,28 @@ class DownloadManager {
   /**
    * @returns {boolean} Indicating if the data was opened.
    */
-  openOrDownloadData(data, filename, dest = null) {
+  openOrDownloadData(element, data, filename) {
     const isPdfData = isPdfFile(filename);
     const contentType = isPdfData ? "application/pdf" : "";
 
     if (isPdfData) {
-      let blobUrl = this.#openBlobUrls.get(data);
+      let blobUrl = this.#openBlobUrls.get(element);
       if (!blobUrl) {
         blobUrl = URL.createObjectURL(new Blob([data], { type: contentType }));
-        this.#openBlobUrls.set(data, blobUrl);
+        this.#openBlobUrls.set(element, blobUrl);
       }
       // Let Firefox's content handler catch the URL and display the PDF.
-      // NOTE: This cannot use a query string for the filename, see
-      //       https://bugzilla.mozilla.org/show_bug.cgi?id=1632644#c5
-      let viewerUrl = blobUrl + "#filename=" + encodeURIComponent(filename);
-      if (dest) {
-        viewerUrl += `&filedest=${escape(dest)}`;
-      }
+      const viewerUrl = blobUrl + "#filename=" + encodeURIComponent(filename);
 
       try {
         window.open(viewerUrl);
         return true;
       } catch (ex) {
-        console.error("openOrDownloadData:", ex);
+        console.error(`openOrDownloadData: ${ex}`);
         // Release the `blobUrl`, since opening it failed, and fallback to
         // downloading the PDF file.
         URL.revokeObjectURL(blobUrl);
-        this.#openBlobUrls.delete(data);
+        this.#openBlobUrls.delete(element);
       }
     }
 
@@ -133,26 +161,43 @@ class DownloadManager {
     return false;
   }
 
-  download(data, url, filename) {
-    const blobUrl = data
-      ? URL.createObjectURL(new Blob([data], { type: "application/pdf" }))
-      : null;
+  download(blob, url, filename, options = {}) {
+    const blobUrl = URL.createObjectURL(blob);
 
     FirefoxCom.request("download", {
       blobUrl,
       originalUrl: url,
       filename,
+      options,
     });
   }
 }
 
-class Preferences extends BasePreferences {
+class FirefoxPreferences extends BasePreferences {
   async _readFromStorage(prefObj) {
     return FirefoxCom.requestAsync("getPreferences", prefObj);
   }
+}
 
-  async _writeToStorage(prefObj) {
-    return FirefoxCom.requestAsync("setPreferences", prefObj);
+class MozL10n {
+  constructor(mozL10n) {
+    this.mozL10n = mozL10n;
+  }
+
+  async getLanguage() {
+    return this.mozL10n.getLanguage();
+  }
+
+  async getDirection() {
+    return this.mozL10n.getDirection();
+  }
+
+  async get(key, args = null, fallback = getL10nFallback(key, args)) {
+    return this.mozL10n.get(key, args, fallback);
+  }
+
+  async translate(element) {
+    this.mozL10n.translate(element);
   }
 }
 
@@ -169,14 +214,14 @@ class Preferences extends BasePreferences {
   const findLen = "find".length;
 
   const handleEvent = function ({ type, detail }) {
-    if (!viewerApp.initialized) {
+    if (!PDFViewerApplication.initialized) {
       return;
     }
     if (type === "findbarclose") {
-      viewerApp.eventBus.dispatch(type, { source: window });
+      PDFViewerApplication.eventBus.dispatch(type, { source: window });
       return;
     }
-    viewerApp.eventBus.dispatch("find", {
+    PDFViewerApplication.eventBus.dispatch("find", {
       source: window,
       type: type.substring(findLen),
       query: detail.query,
@@ -196,18 +241,18 @@ class Preferences extends BasePreferences {
 (function listenZoomEvents() {
   const events = ["zoomin", "zoomout", "zoomreset"];
   const handleEvent = function ({ type, detail }) {
-    if (!viewerApp.initialized) {
+    if (!PDFViewerApplication.initialized) {
       return;
     }
     // Avoid attempting to needlessly reset the zoom level *twice* in a row,
     // when using the `Ctrl + 0` keyboard shortcut.
     if (
       type === "zoomreset" &&
-      viewerApp.pdfViewer.currentScaleValue === DEFAULT_SCALE_VALUE
+      PDFViewerApplication.pdfViewer.currentScaleValue === DEFAULT_SCALE_VALUE
     ) {
       return;
     }
-    viewerApp.eventBus.dispatch(type, { source: window });
+    PDFViewerApplication.eventBus.dispatch(type, { source: window });
   };
 
   for (const event of events) {
@@ -217,10 +262,10 @@ class Preferences extends BasePreferences {
 
 (function listenSaveEvent() {
   const handleEvent = function ({ type, detail }) {
-    if (!viewerApp.initialized) {
+    if (!PDFViewerApplication.initialized) {
       return;
     }
-    viewerApp.eventBus.dispatch("download", { source: window });
+    PDFViewerApplication.eventBus.dispatch("download", { source: window });
   };
 
   window.addEventListener("save", handleEvent);
@@ -228,10 +273,10 @@ class Preferences extends BasePreferences {
 
 (function listenEditingEvent() {
   const handleEvent = function ({ detail }) {
-    if (!viewerApp.initialized) {
+    if (!PDFViewerApplication.initialized) {
       return;
     }
-    viewerApp.eventBus.dispatch("editingaction", {
+    PDFViewerApplication.eventBus.dispatch("editingaction", {
       source: window,
       name: detail.name,
     });
@@ -244,9 +289,9 @@ if (PDFJSDev.test("GECKOVIEW")) {
   (function listenQueryEvents() {
     window.addEventListener("pdf.js.query", async ({ detail: { queryId } }) => {
       let result = null;
-      if (viewerApp.initialized && queryId === "canDownloadInsteadOfPrint") {
+      if (queryId === "canDownloadInsteadOfPrint") {
         result = false;
-        const { pdfDocument, pdfViewer } = viewerApp;
+        const { pdfDocument, pdfViewer } = PDFViewerApplication;
         if (pdfDocument) {
           try {
             const hasUnchangedAnnotations =
@@ -256,8 +301,14 @@ if (PDFJSDev.test("GECKOVIEW")) {
             const hasWillPrint =
               pdfViewer.enableScripting &&
               !!(await pdfDocument.getJSActions())?.WillPrint;
+            const hasUnchangedOptionalContent = (
+              await pdfViewer.optionalContentConfigPromise
+            ).hasInitialVisibility;
 
-            result = hasUnchangedAnnotations && !hasWillPrint;
+            result =
+              hasUnchangedAnnotations &&
+              !hasWillPrint &&
+              hasUnchangedOptionalContent;
           } catch {
             console.warn("Unable to check if the document can be downloaded.");
           }
@@ -283,9 +334,9 @@ class FirefoxComDataRangeTransport extends PDFDataRangeTransport {
     FirefoxCom.request("requestDataRange", { begin, end });
   }
 
-  // NOTE: This method is currently not invoked in the Firefox PDF Viewer.
   abort() {
-    FirefoxCom.request("abortLoading", null);
+    // Sync call to ensure abort is really started.
+    FirefoxCom.requestSync("abortLoading", null);
   }
 }
 
@@ -306,205 +357,16 @@ class FirefoxScripting {
   }
 }
 
-class MLManager {
-  #abortSignal = null;
-
-  #enabled = null;
-
-  #eventBus = null;
-
-  #ready = null;
-
-  #requestResolvers = null;
-
-  hasProgress = false;
-
-  static #AI_ALT_TEXT_MODEL_NAME = "moz-image-to-text";
-
-  constructor({
-    altTextLearnMoreUrl,
-    enableGuessAltText,
-    enableAltTextModelDownload,
-  }) {
-    // The `altTextLearnMoreUrl` is used to provide a link to the user to learn
-    // more about the "alt text" feature.
-    // The link is used in the Alt Text dialog or in the Image Settings.
-    this.altTextLearnMoreUrl = altTextLearnMoreUrl;
-    this.enableAltTextModelDownload = enableAltTextModelDownload;
-    this.enableGuessAltText = enableGuessAltText;
-  }
-
-  setEventBus(eventBus, abortSignal) {
-    this.#eventBus = eventBus;
-    this.#abortSignal = abortSignal;
-    eventBus._on(
-      "enablealttextmodeldownload",
-      ({ value }) => {
-        if (this.enableAltTextModelDownload === value) {
-          return;
-        }
-        if (value) {
-          this.downloadModel("altText");
-        } else {
-          this.deleteModel("altText");
-        }
-      },
-      { signal: abortSignal }
-    );
-    eventBus._on(
-      "enableguessalttext",
-      ({ value }) => {
-        this.toggleService("altText", value);
-      },
-      { signal: abortSignal }
-    );
-  }
-
-  async isEnabledFor(name) {
-    return this.enableGuessAltText && !!(await this.#enabled?.get(name));
-  }
-
-  isReady(name) {
-    return this.#ready?.has(name) ?? false;
-  }
-
-  async deleteModel(name) {
-    if (name !== "altText" || !this.enableAltTextModelDownload) {
-      return;
-    }
-    this.enableAltTextModelDownload = false;
-    this.#ready?.delete(name);
-    this.#enabled?.delete(name);
-    await this.toggleService("altText", false);
-    await FirefoxCom.requestAsync(
-      "mlDelete",
-      MLManager.#AI_ALT_TEXT_MODEL_NAME
-    );
-  }
-
-  async loadModel(name) {
-    if (name === "altText" && this.enableAltTextModelDownload) {
-      await this.#loadAltTextEngine(false);
-    }
-  }
-
-  async downloadModel(name) {
-    if (name !== "altText" || this.enableAltTextModelDownload) {
-      return null;
-    }
-    this.enableAltTextModelDownload = true;
-    return this.#loadAltTextEngine(true);
-  }
-
-  async guess(data) {
-    if (data?.name !== "altText") {
-      return null;
-    }
-    const resolvers = (this.#requestResolvers ||= new Set());
-    const resolver = Promise.withResolvers();
-    resolvers.add(resolver);
-
-    data.service = MLManager.#AI_ALT_TEXT_MODEL_NAME;
-
-    FirefoxCom.requestAsync("mlGuess", data)
-      .then(response => {
-        if (resolvers.has(resolver)) {
-          resolver.resolve(response);
-          resolvers.delete(resolver);
-        }
-      })
-      .catch(reason => {
-        if (resolvers.has(resolver)) {
-          resolver.reject(reason);
-          resolvers.delete(resolver);
-        }
-      });
-
-    return resolver.promise;
-  }
-
-  async #cancelAllRequests() {
-    if (!this.#requestResolvers) {
-      return;
-    }
-    for (const resolver of this.#requestResolvers) {
-      resolver.resolve({ cancel: true });
-    }
-    this.#requestResolvers.clear();
-    this.#requestResolvers = null;
-  }
-
-  async toggleService(name, enabled) {
-    if (name !== "altText" || this.enableGuessAltText === enabled) {
-      return;
-    }
-
-    this.enableGuessAltText = enabled;
-    if (enabled) {
-      if (this.enableAltTextModelDownload) {
-        await this.#loadAltTextEngine(false);
-      }
-    } else {
-      this.#cancelAllRequests();
-    }
-  }
-
-  async #loadAltTextEngine(listenToProgress) {
-    if (this.#enabled?.has("altText")) {
-      // We already have a promise for the "altText" service.
-      return;
-    }
-    this.#ready ||= new Set();
-    const promise = FirefoxCom.requestAsync("loadAIEngine", {
-      service: MLManager.#AI_ALT_TEXT_MODEL_NAME,
-      listenToProgress,
-    }).then(ok => {
-      if (ok) {
-        this.#ready.add("altText");
-      }
-      return ok;
-    });
-    (this.#enabled ||= new Map()).set("altText", promise);
-    if (listenToProgress) {
-      const ac = new AbortController();
-      const signal = AbortSignal.any([this.#abortSignal, ac.signal]);
-
-      this.hasProgress = true;
-      window.addEventListener(
-        "loadAIEngineProgress",
-        ({ detail }) => {
-          this.#eventBus.dispatch("loadaiengineprogress", {
-            source: this,
-            detail,
-          });
-          if (detail.finished) {
-            ac.abort();
-            this.hasProgress = false;
-          }
-        },
-        { signal }
-      );
-      promise.then(ok => {
-        if (!ok) {
-          ac.abort();
-          this.hasProgress = false;
-        }
-      });
-    }
-    await promise;
-  }
-}
-
-class ExternalServices extends BaseExternalServices {
-  updateFindControlState(data) {
+class FirefoxExternalServices extends DefaultExternalServices {
+  static updateFindControlState(data) {
     FirefoxCom.request("updateFindControlState", data);
   }
 
-  updateFindMatchesCount(data) {
+  static updateFindMatchesCount(data) {
     FirefoxCom.request("updateFindMatchesCount", data);
   }
 
-  initPassiveLoading() {
+  static initPassiveLoading(callbacks) {
     let pdfDataRangeTransport;
 
     window.addEventListener("message", function windowMessage(e) {
@@ -521,7 +383,7 @@ class ExternalServices extends BaseExternalServices {
       switch (args.pdfjsLoadAction) {
         case "supportsRangedLoading":
           if (args.done && !args.data) {
-            viewerApp._documentError(null);
+            callbacks.onError();
             break;
           }
           pdfDataRangeTransport = new FirefoxComDataRangeTransport(
@@ -531,7 +393,7 @@ class ExternalServices extends BaseExternalServices {
             args.filename
           );
 
-          viewerApp.open({ range: pdfDataRangeTransport });
+          callbacks.onOpenWithTransport(pdfDataRangeTransport);
           break;
         case "range":
           pdfDataRangeTransport.onDataRange(args.begin, args.chunk);
@@ -550,40 +412,99 @@ class ExternalServices extends BaseExternalServices {
           pdfDataRangeTransport?.onDataProgressiveDone();
           break;
         case "progress":
-          viewerApp.progress(args.loaded / args.total);
+          callbacks.onProgress(args.loaded, args.total);
           break;
         case "complete":
           if (!args.data) {
-            viewerApp._documentError(null, { message: args.errorCode });
+            callbacks.onError(args.errorCode);
             break;
           }
-          viewerApp.open({ data: args.data, filename: args.filename });
+          callbacks.onOpenWithData(args.data, args.filename);
           break;
       }
     });
-    FirefoxCom.request("initPassiveLoading", null);
+    FirefoxCom.requestSync("initPassiveLoading", null);
   }
 
-  reportTelemetry(data) {
-    FirefoxCom.request("reportTelemetry", data);
+  static reportTelemetry(data) {
+    FirefoxCom.request("reportTelemetry", JSON.stringify(data));
   }
 
-  updateEditorStates(data) {
+  static createDownloadManager() {
+    return new DownloadManager();
+  }
+
+  static createPreferences() {
+    return new FirefoxPreferences();
+  }
+
+  static updateEditorStates(data) {
     FirefoxCom.request("updateEditorStates", data);
   }
 
-  async createL10n() {
-    await document.l10n.ready;
-    return new L10n(AppOptions.get("localeProperties"), document.l10n);
+  static createL10n(options) {
+    const mozL10n = document.mozL10n;
+    // TODO refactor mozL10n.setExternalLocalizerServices
+    return new MozL10n(mozL10n);
   }
 
-  createScripting() {
+  static createScripting(options) {
     return FirefoxScripting;
   }
 
-  dispatchGlobalEvent(event) {
-    FirefoxCom.request("dispatchGlobalEvent", event);
+  static get supportsPinchToZoom() {
+    const support = FirefoxCom.requestSync("supportsPinchToZoom");
+    return shadow(this, "supportsPinchToZoom", support);
+  }
+
+  static get supportsIntegratedFind() {
+    const support = FirefoxCom.requestSync("supportsIntegratedFind");
+    return shadow(this, "supportsIntegratedFind", support);
+  }
+
+  static get supportsDocumentFonts() {
+    const support = FirefoxCom.requestSync("supportsDocumentFonts");
+    return shadow(this, "supportsDocumentFonts", support);
+  }
+
+  static get supportedMouseWheelZoomModifierKeys() {
+    const support = FirefoxCom.requestSync(
+      "supportedMouseWheelZoomModifierKeys"
+    );
+    return shadow(this, "supportedMouseWheelZoomModifierKeys", support);
+  }
+
+  static get isInAutomation() {
+    // Returns the value of `Cu.isInAutomation`, which is only `true` when e.g.
+    // various test-suites are running in mozilla-central.
+    const isInAutomation = FirefoxCom.requestSync("isInAutomation");
+    return shadow(this, "isInAutomation", isInAutomation);
+  }
+
+  static get canvasMaxAreaInBytes() {
+    const maxArea = FirefoxCom.requestSync("getCanvasMaxArea");
+    return shadow(this, "canvasMaxAreaInBytes", maxArea);
+  }
+
+  static async getNimbusExperimentData() {
+    const nimbusData = await FirefoxCom.requestAsync(
+      "getNimbusExperimentData",
+      null
+    );
+    return nimbusData && JSON.parse(nimbusData);
   }
 }
+PDFViewerApplication.externalServices = FirefoxExternalServices;
 
-export { DownloadManager, ExternalServices, initCom, MLManager, Preferences };
+// l10n.js for Firefox extension expects services to be set.
+document.mozL10n.setExternalLocalizerServices({
+  getLocale() {
+    return FirefoxCom.requestSync("getLocale", null);
+  },
+
+  getStrings(key) {
+    return FirefoxCom.requestSync("getStrings", null);
+  },
+});
+
+export { DownloadManager, FirefoxCom };
